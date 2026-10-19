@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · Breadcrumb{% endblock %}
+{% block crumb %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="tiles">
+  <div class="tile">
+    <span class="k">Programs</span>
+    <span class="v">{{ programs|length }}</span>
+    <span class="d">{{ counts.values()|sum }} entities total</span>
+  </div>
+  <div class="tile">
+    <span class="k">Unassigned</span>
+    <span class="v {{ 'warn' if unassigned_count else '' }}">{{ unassigned_count }}</span>
+    <span class="d"><a href="/inbox">inspect inbox →</a></span>
+  </div>
+  <div class="tile">
+    <span class="k">Captures</span>
+    <span class="v">{{ recent|length }}</span>
+    <span class="d">most recent {{ recent|length }} shown</span>
+  </div>
+  <div class="tile">
+    <span class="k">Scope hits</span>
+    <span class="v ok">{{ programs|length }}</span>
+    <span class="d">tracked targets</span>
+  </div>
+</div>
+
+{% if insights.top_types or insights.top_ports or insights.interesting %}
+<section class="card">
+  <h2>Actionable insights</h2>
+  <div class="insights">
+    {% if insights.interesting %}
+    <div class="insight warn">
+      <span class="insight-n">{{ insights.interesting }}</span>
+      <span class="insight-l">sensitive hits <span class="dim">(secrets · creds · CVEs · hashes · JWTs)</span></span>
+      <a href="/entities?q=type%3Asecret">review →</a>
+    </div>
+    {% endif %}
+    {% if insights.busiest_target %}
+    <div class="insight">
+      <span class="insight-n">{{ insights.busiest_target.count }}</span>
+      <span class="insight-l">entities on busiest target <span class="mono">{{ insights.busiest_target.name }}</span></span>
+    </div>
+    {% endif %}
+    {% if insights.top_ports %}
+    <div class="insight">
+      <span class="insight-l">Top open ports</span>
+      <span class="insight-tags">
+        {% for port, n in insights.top_ports %}
+        <a class="chip mono" href="/entities?q=type%3Aport+{{ port }}">{{ port }} · {{ n }}</a>
+        {% endfor %}
+      </span>
+    </div>
+    {% endif %}
+    {% if insights.top_types %}
+    <div class="insight">
+      <span class="insight-l">Top entity types</span>
+      <span class="insight-tags">
+        {% for t, n in insights.top_types %}
+        <a class="chip mono" href="/entities?q=type%3A{{ t }}">{{ type_labels.get(t, t) }} · {{ n }}</a>
+        {% endfor %}
+      </span>
+    </div>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+<div class="grid">
+  <section class="card">
+    <h2>Quick capture</h2>
+    <p class="muted">Paste anything — nmap, dig, URLs, secrets, creds, hashes, JWTs. Breadcrumb detects the format.</p>
+    <form method="post" action="/paste" class="stack">
+      <textarea name="text" rows="9" placeholder="paste raw output here…" required></textarea>
+      <div class="row">
+        <select name="program_id">
+          <option value="">(unassigned — send to Inbox)</option>
+          {% for p in programs %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
+        </select>
+        <select name="target_id">
+          <option value="">(no target)</option>
+          {% for t in targets %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
+        </select>
+        <button class="primary" type="submit">Capture</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>New program</h2>
+    <p class="muted">Group recon by engagement and define scope once.</p>
+    <form method="post" action="/programs" class="stack">
+      <input name="name" placeholder="program / target name" required>
+      <input name="platform" placeholder="platform (hackerone, bugcrowd, private…)">
+      <textarea name="scope_in" rows="3" placeholder="in-scope — one per line (domain, *.wildcard, CIDR, URL)"></textarea>
+      <textarea name="scope_out" rows="3" placeholder="out-of-scope — one per line (prefix with ! to negate)"></textarea>
+      <button class="primary" type="submit">Create program</button>
+    </form>
+  </section>
+</div>
+
+<section class="card">
+  <div class="spread">
+    <h2>Programs <span class="count">{{ programs|length }}</span></h2>
+    {% if programs %}
+    <form method="post" action="/rebuild">
+      <button class="ghost sm" type="submit">Rebuild all graphs</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if programs %}
+  <table>
+    <thead><tr><th>Name</th><th>Platform</th><th>Entities</th><th>Reports</th></tr></thead>
+    <tbody>
+      {% for p in programs %}
+      <tr>
+        <td><a href="/programs/{{ p.id }}">{{ p.name }}</a></td>
+        <td class="muted">{{ p.platform or '—' }}</td>
+        <td><span class="badge x">{{ counts.get(p.id, 0) }}</span></td>
+        <td class="muted">
+          <a href="/reports/{{ p.id }}/html">html</a> ·
+          <a href="/reports/{{ p.id }}/md">md</a> ·
+          <a href="/reports/{{ p.id }}/json">json</a> ·
+          <a href="/reports/{{ p.id }}/csv">csv</a> ·
+          <a href="/reports/{{ p.id }}/h1">h1</a> ·
+          <a href="/reports/{{ p.id }}/targets.txt" title="in-scope host list for nuclei -l">targets</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <span class="es-icon">◈</span>
+    <h3>No programs yet</h3>
+    <p>Create one above to group your recon by engagement.</p>
+  </div>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Recent captures</h2>
+  {% if recent %}
+  <div class="timeline">
+    {% for pa in recent %}
+    <div class="tl-item">
+      <span class="tl-dot"></span>
+      <div class="tl-body">
+        <div><a href="/pastes/{{ pa.id }}">Capture #{{ pa.id }}</a>
+          <span class="chip">{{ (pa.parsers or [])|join(', ') or 'no parser' }}</span></div>
+        <div class="tl-time">{{ pa.created_at.strftime('%Y-%m-%d %H:%M UTC') }}</div>
+        <div class="mono muted preview">{{ pa.raw[:110]|replace('\n', ' ') }}</div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty">No captures yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

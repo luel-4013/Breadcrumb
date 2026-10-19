@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui with context %}
+{% block title %}Entities · Breadcrumb{% endblock %}
+{% block crumb %}Entities{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>Entity explorer</h2>
+  <form method="get" action="/entities" class="row">
+    <input name="q" value="{{ q }}" placeholder="search value…">
+    <select name="type">
+      <option value="">all types</option>
+      {% for t in types %}<option value="{{ t }}" {% if selected_type == t %}selected{% endif %}>{{ type_labels.get(t, t) }}</option>{% endfor %}
+    </select>
+    <select name="program_id">
+      <option value="">all programs</option>
+      {% for p in programs %}<option value="{{ p.id }}" {% if selected_program == (p.id|string) %}selected{% endif %}>{{ p.name }}</option>{% endfor %}
+    </select>
+    <select name="verdict">
+      <option value="">any verdict</option>
+      {% for v in verdicts %}<option value="{{ v }}" {% if selected_verdict == v %}selected{% endif %}>{{ v }}</option>{% endfor %}
+    </select>
+    <button type="submit">Filter</button>
+  </form>
+  <p class="muted">
+    {{ total }} results · query language:
+    <code>type:port</code> <code>scope:in</code> <code>program:acme</code>
+    <code>target:10.0.0.5</code> <code>value:443</code>
+    <code>tag:needs-auth</code> <code>verdict:false-positive</code>
+  </p>
+  <p class="muted">
+    {% if show_ignored %}
+      showing ignored too · <a href="/entities?{{ qs|replace('show_ignored=1', '')|replace('&&', '&') }}">hide ignored</a>
+    {% elif ignored_total %}
+      {{ ignored_total }} ignored · <a href="/entities?{{ qs }}{% if qs %}&{% endif %}show_ignored=1">show ignored</a>
+    {% endif %}
+  </p>
+</section>
+
+<section class="card">
+  {{ ui.entity_groups(groups, editable=true, back=back) }}
+  {% if pages > 1 %}
+  <div class="pager">
+    {% if page > 1 %}<a class="btn sm" href="/entities?{{ qs }}&page={{ page - 1 }}">← Prev</a>{% endif %}
+    <span class="muted">Page {{ page }} of {{ pages }} · {{ total }} results</span>
+    {% if page < pages %}<a class="btn sm" href="/entities?{{ qs }}&page={{ page + 1 }}">Next →</a>{% endif %}
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

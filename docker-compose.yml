@@ -1,0 +1,15 @@
+services:
+  breadcrumb:
+    build: .
+    image: breadcrumb:latest
+    container_name: breadcrumb
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - breadcrumb-data:/data
+    environment:
+      BREADCRUMB_DB_PATH: /data/breadcrumb.db
+    restart: unless-stopped
+
+volumes:
+  breadcrumb-data:

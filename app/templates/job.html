@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Job #{{ job.id }} · Breadcrumb{% endblock %}
+{% block crumb %}Runners <span class="sep">/</span> <span class="sub">job #{{ job.id }}</span>{% endblock %}
+
+{% block actions %}
+  {% if job.status in ['queued', 'running'] %}
+  <form method="post" action="/jobs/{{ job.id }}/cancel"><button class="btn sm" type="submit">Cancel</button></form>
+  {% else %}
+  <form method="post" action="/jobs/{{ job.id }}/retry"><button class="btn sm" type="submit">Retry</button></form>
+  {% endif %}
+  <form method="post" action="/jobs/{{ job.id }}/delete" data-confirm="Delete job #{{ job.id }}?"><button class="btn ghost sm" type="submit">Delete</button></form>
+{% endblock %}
+
+{% block content %}
+<div class="tiles">
+  <div class="tile"><span class="k">Status</span><span class="v"><span class="badge st-{{ job.status }}">{{ job.status }}</span></span><span class="d">{{ job.runner }}</span></div>
+  <div class="tile"><span class="k">Target</span><span class="v mono" style="font-size:1rem">{{ job.target or '—' }}</span><span class="d">{{ runner.label if runner else job.runner }}</span></div>
+  <div class="tile"><span class="k">Program</span><span class="v">{{ program.name if program else '—' }}</span><span class="d">{{ 'attached' if program else 'unattached' }}</span></div>
+  <div class="tile"><span class="k">Headers</span><span class="v" style="font-size:1rem">{{ profile.name if profile else 'default' }}</span><span class="d">{{ profile.proxy if profile and profile.proxy else 'direct connection' }}</span></div>
+</div>
+
+<section class="card">
+  <h2>How to run this job</h2>
+  <p class="muted">
+    Breadcrumb is import-first; no executor is bundled. Run the tool wherever your
+    tooling lives, then pipe the output back.
+  </p>
+  <ol class="muted">
+    <li>Mark it running: <code>POST /api/v1/jobs/{{ job.id }}/status</code> with <code>status: running</code></li>
+    <li>Run <code>{{ runner.example if runner else job.runner }}</code>{% if job.target %} against <code>{{ job.target }}</code>{% endif %}.</li>
+    <li>POST the output to <code>/api/v1/pastes</code>{% if job.program_id %} with <code>program_id={{ job.program_id }}</code>{% endif %}.</li>
+    <li>Finish: <code>status: done</code>. Executors stream progress via the same endpoint's <code>log</code> field.</li>
+  </ol>
+  {% if profile %}
+  <h3>Request profile</h3>
+  <p class="muted mono">{{ profile.user_agent }}</p>
+  {% if profile.proxy %}<p class="muted">proxy <span class="mono">{{ profile.proxy }}</span>{% if profile.rate_limit %} · rate limit {{ profile.rate_limit }}/s{% endif %}</p>{% endif %}
+  <div class="spread">
+    <h4>curl</h4>
+    <button class="copy" data-copy="{{ curl }}">⧉ copy</button>
+  </div>
+  <pre class="raw">{{ curl }}{% if job.target %} {{ job.target }}{% endif %}</pre>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Log</h2>
+  {% if job.log %}<pre class="raw">{{ job.log }}</pre>{% else %}<p class="empty">No log output yet.</p>{% endif %}
+  <p class="dim">
+    queued {{ job.created_at.strftime('%Y-%m-%d %H:%M UTC') if job.created_at else '—' }}
+    {% if job.started_at %} · started {{ job.started_at.strftime('%Y-%m-%d %H:%M UTC') }}{% endif %}
+    {% if job.finished_at %} · finished {{ job.finished_at.strftime('%Y-%m-%d %H:%M UTC') }}{% endif %}
+  </p>
+</section>
+{% endblock %}

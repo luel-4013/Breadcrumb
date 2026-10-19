@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui with context %}
+{% block title %}Capture #{{ paste.id }} · Breadcrumb{% endblock %}
+{% block crumb %}Capture <span class="sep">/</span> <span class="sub">#{{ paste.id }}</span>{% endblock %}
+
+{% block content %}
+<div data-tabs>
+  <div class="tabs">
+    <button class="tab active" data-tab="overview">Overview</button>
+    <button class="tab" data-tab="entities">Entities</button>
+    <button class="tab" data-tab="ai">AI analysis</button>
+  </div>
+
+  <div class="tabpanel active" data-panel="overview">
+    <section class="card">
+      <div class="spread">
+        <h2>Capture #{{ paste.id }}</h2>
+        <span class="muted">{{ paste.created_at.strftime('%Y-%m-%d %H:%M UTC') }} · source: {{ paste.source }}</span>
+      </div>
+      <p class="muted">Parsers matched:
+        {% for pr in (paste.parsers or []) %}<span class="chip">{{ pr }}</span> {% else %}none{% endfor %}
+      </p>
+      {% if paste.chain_hash %}
+      <p class="muted dim" title="Tamper-evident evidence seal (SHA-256 hash chain). Verify all captures at /api/v1/verify.">
+        seal <span class="mono">{{ paste.chain_hash[:16] }}…</span> ·
+        content <span class="mono">{{ (paste.content_sha256 or '')[:12] }}…</span> ·
+        <a href="/api/v1/verify">verify chain</a>
+      </p>
+      {% endif %}
+      {% if paste.parse_errors %}
+      <div class="warn-box">
+        <strong>{{ paste.parse_errors|length }} parser issue(s) — results may be incomplete:</strong>
+        <ul class="ai-list">
+          {% for err in paste.parse_errors %}<li><span class="mono">{{ err.parser }}</span>: {{ err.error }}</li>{% endfor %}
+        </ul>
+      </div>
+      {% elif not groups %}
+      <div class="warn-box">
+        <strong>No entities detected.</strong> No parser matched this input — check the
+        format, or open an issue with a redacted sample.
+      </div>
+      {% endif %}
+      <form method="post" action="/pastes/{{ paste.id }}/assign" class="row">
+        <select name="program_id">
+          <option value="">(unassigned)</option>
+          {% for p in programs %}<option value="{{ p.id }}" {% if paste.program_id == p.id %}selected{% endif %}>{{ p.name }}</option>{% endfor %}
+        </select>
+        <select name="target_id">
+          <option value="">(no target)</option>
+          {% for t in targets %}<option value="{{ t.id }}" {% if paste.target_id == t.id %}selected{% endif %}>{{ t.name }}</option>{% endfor %}
+        </select>
+        <button type="submit">Save assignment</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <div class="spread">
+        <h2>Raw capture</h2>
+        <button class="copy" data-copy="{{ paste.raw }}" title="Copy raw">⧉ copy</button>
+      </div>
+      <pre class="raw">{{ paste.raw }}</pre>
+    </section>
+  </div>
+
+  <div class="tabpanel" data-panel="entities">
+    <section class="card">
+      <h2>Detected entities</h2>
+      {{ ui.entity_groups(groups, editable=true) }}
+    </section>
+  </div>
+
+  <div class="tabpanel" data-panel="ai">
+    <section class="card ai-panel">
+      <div class="spread">
+        <h2>AI analysis</h2>
+        <form method="post" action="/pastes/{{ paste.id }}/analyze" data-ai>
+          <button class="primary" type="submit" data-label="{{ 'Re-analyze' if paste.ai_analysis else 'Analyze with AI' }}">
+            {{ 'Re-analyze' if paste.ai_analysis else 'Analyze with AI' }}
+          </button>
+        </form>
+      </div>
+
+      {% set a = paste.ai_analysis %}
+      {% if a %}
+        <div class="ai-meta">
+          <span class="chip">{{ a.get('model') or paste.ai_model or 'unknown model' }}</span>
+          <span>task: {{ a.get('task', '—') }}</span>
+          {% if paste.ai_at %}<span>{{ paste.ai_at.strftime('%Y-%m-%d %H:%M UTC') }}</span>{% endif %}
+          {% if a.get('severity_hint') %}<span class="sev sev-{{ a.get('severity_hint') }}">{{ a.get('severity_hint') }}</span>{% endif %}
+        </div>
+        {% if not a.get('ok') %}
+          <p class="muted">Request failed: {{ a.get('error') }}. Check <a href="/settings">Settings</a> and make sure your local model server is running.</p>
+        {% else %}
+          {% if a.get('summary') %}<div class="ai-md">{{ a.get('summary') }}</div>{% endif %}
+          {% if a.get('observations') %}
+            <h4>Observations</h4>
+            <ul class="ai-list">{% for o in a.get('observations') %}<li>{{ o }}</li>{% endfor %}</ul>
+          {% endif %}
+          {% if a.get('next_steps') %}
+            <h4>Suggested next steps</h4>
+            <ul class="ai-list">{% for s in a.get('next_steps') %}<li>{{ s }}</li>{% endfor %}</ul>
+          {% endif %}
+          {% if a.get('notes') %}<p class="dim">{{ a.get('notes') }}</p>{% endif %}
+        {% endif %}
+      {% else %}
+        <p class="ai-empty">No analysis yet. Run <strong>Analyze with AI</strong> to get a summary, observations and next steps from your local model.</p>
+      {% endif %}
+    </section>
+  </div>
+</div>
+{% endblock %}

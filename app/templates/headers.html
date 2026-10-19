@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Header profiles · Breadcrumb{% endblock %}
+{% block crumb %}Header profiles{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>New profile</h2>
+  <p class="muted">Pick a family (OS × browser × device) for a randomized realistic set, then add custom overrides. Attach profiles to scan jobs so executors send them — or copy the curl flags for manual testing.</p>
+  <form method="post" action="/headers" class="stack">
+    <div class="row">
+      <input name="name" placeholder="profile name (e.g. chrome-win)" required>
+      <select name="family">
+        <option value="random">random (auto)</option>
+        {% for fid, fam in families.items() %}
+        <option value="{{ fid }}">{{ fam[0] }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <textarea name="custom" rows="4" placeholder="custom overrides, one per line:&#10;X-Custom: value&#10;Cookie: session=abc"></textarea>
+    <div class="row">
+      <label class="field grow">Proxy (optional)
+        <input name="proxy" class="mono" placeholder="http://127.0.0.1:8080 or socks5://127.0.0.1:9050">
+      </label>
+      <label class="field">Rate limit (req/s)
+        <input name="rate_limit" class="mono" type="number" step="0.1" min="0" placeholder="0">
+      </label>
+    </div>
+    <div><button class="primary" type="submit">Create profile</button></div>
+  </form>
+</section>
+
+{% for p in profiles %}
+<section class="card">
+  <div class="spread">
+    <h2>{{ p.name }} <span class="chip">{{ families.get(p.family, [p.family])[0] }}</span></h2>
+    <div class="row" style="flex:0 0 auto">
+      <form method="post" action="/headers/{{ p.id }}/randomize"><button class="sm" type="submit">Randomize</button></form>
+      <form method="post" action="/headers/{{ p.id }}/delete" data-confirm="Delete header profile '{{ p.name }}'?"><button class="danger" type="submit">delete</button></form>
+    </div>
+  </div>
+  {% set used = usage.get(p.id, []) %}
+  <p class="muted">
+    {% if used %}
+      In use by
+      {% for j in used %}<a href="/runners">job #{{ j.id }}</a> ({{ j.runner }} · {{ j.target or 'no target' }} · {{ j.status }}){% if not loop.last %}, {% endif %}{% endfor %}
+    {% else %}
+      Not attached to any job yet — select it when queueing on <a href="/runners">Runners</a>.
+    {% endif %}
+  </p>
+  <div class="spread">
+    <code class="mono">{{ p.user_agent }}</code>
+    <button class="copy" data-copy="{{ p.user_agent }}" title="Copy User-Agent">⧉</button>
+  </div>
+  <table>
+    <thead><tr><th>Header</th><th>Value</th></tr></thead>
+    <tbody>
+      {% for k, v in (p.headers or {}).items() %}
+      <tr><td class="mono">{{ k }}</td><td class="mono muted">{{ v }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">curl:
+    <button class="copy" data-copy="curl {% if p.proxy %}-x '{{ p.proxy }}' {% endif %}{% for k, v in (p.headers or {}).items() %}-H '{{ k }}: {{ v }}' {% endfor %}URL" title="Copy curl flags">⧉ copy flags</button>
+  </p>
+  <form method="post" action="/headers/{{ p.id }}/egress" class="row">
+    <label class="field grow">Proxy / egress
+      <input name="proxy" class="mono" value="{{ p.proxy or '' }}" placeholder="http://127.0.0.1:8080 or socks5://127.0.0.1:9050">
+    </label>
+    <label class="field">Rate limit (req/s)
+      <input name="rate_limit" class="mono" type="number" step="0.1" min="0" value="{{ p.rate_limit or 0 }}">
+    </label>
+    <button class="sm" type="submit">save egress</button>
+  </form>
+</section>
+{% else %}
+<div class="empty-state">
+  <span class="es-icon">≣</span>
+  <h3>No header profiles</h3>
+  <p>Create one above — randomized per family, fully customizable.</p>
+</div>
+{% endfor %}
+{% endblock %}

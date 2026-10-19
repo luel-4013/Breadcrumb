@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Pipeline · Breadcrumb{% endblock %}
+{% block crumb %}Pipeline{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>Recon pipeline</h2>
+  <p class="muted">
+    Breadcrumb is import-first — it doesn't shell out to recon tools for you.
+    Instead, it hands you the exact chain that feeds results back in. Run these
+    in a terminal, then re-import any time; captures de-duplicate findings for you.
+  </p>
+  <form method="get" action="/pipeline" class="row">
+    <select name="program_id">
+      {% for p in programs %}
+      <option value="{{ p.id }}" {{ 'selected' if program and p.id == program.id else '' }}>{{ p.name }}</option>
+      {% endfor %}
+    </select>
+    <select name="header_profile_id">
+      <option value="">(default headers)</option>
+      {% for h in profiles %}
+      <option value="{{ h.id }}" {{ 'selected' if header_profile and h.id == header_profile.id else '' }}>{{ h.name }}</option>
+      {% endfor %}
+    </select>
+    <button class="primary" type="submit">Generate</button>
+    {% if program %}<a class="btn" href="/reports/{{ program.id }}/targets.txt">targets.txt</a>{% endif %}
+  </form>
+</section>
+
+{% if not program %}
+<section class="card">
+  <p class="muted">Create a program with an in-scope entry and Breadcrumb will auto-create targets and generate the pipeline here.</p>
+</section>
+{% else %}
+<section class="card">
+  <h2>{{ program.name }}</h2>
+  <p class="muted">
+    Seed: <span class="chip mono">{{ built.seed }}</span>
+    · {{ built.targets|length }} target(s)
+    {% if built.targets %}: <span class="mono dim">{{ built.targets[:8]|join(', ') }}{% if built.targets|length > 8 %} …{% endif %}</span>{% endif %}
+  </p>
+</section>
+
+{% for step in built.steps %}
+<section class="card step">
+  <div class="step-head">
+    <h3>{{ step.title }}</h3>
+    <button class="sm" data-copy="{{ step.cmd }}">Copy</button>
+  </div>
+  <pre class="mono cmd">{{ step.cmd }}</pre>
+  {% if step.note %}<p class="muted dim">{{ step.note }}</p>{% endif %}
+</section>
+{% endfor %}
+{% endif %}
+{% endblock %}

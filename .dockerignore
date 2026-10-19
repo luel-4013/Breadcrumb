@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+*.db
+*.sqlite*
+.git/
+breadcrumb.llm.json
+.env
+/tmp/

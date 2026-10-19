@@ -1,0 +1,250 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui with context %}
+{% block title %}{{ program.name }} · Breadcrumb{% endblock %}
+{% block crumb %}{{ program.name }}{% if program.platform %} <span class="sep">·</span> <span class="sub">{{ program.platform }}</span>{% endif %}{% endblock %}
+
+{% block actions %}
+  <a class="btn ghost sm" href="/programs/{{ program.id }}/graph">Graph</a>
+  <a class="btn ghost sm" href="/programs/{{ program.id }}/changes">Changes</a>
+  <a class="btn ghost sm" href="/pipeline?program_id={{ program.id }}">Pipeline</a>
+  <a class="btn ghost sm" href="/reports/{{ program.id }}/html">Report</a>
+  <form method="post" action="/programs/{{ program.id }}/rebuild"><button class="btn sm" type="submit">Rebuild</button></form>
+{% endblock %}
+
+{% block content %}
+<div class="tiles">
+  <div class="tile"><span class="k">Entities</span><span class="v">{{ entity_total }}</span><span class="d">{{ groups|length }} types</span></div>
+  <div class="tile"><span class="k">Relationships</span><span class="v">{{ relationships|length }}</span><span class="d">derived + manual</span></div>
+  <div class="tile"><span class="k">In scope</span><span class="v ok">{{ scope_counts.in }}</span><span class="d">{{ scope_counts.out }} out · {{ scope_counts.unknown }} unknown</span></div>
+  <div class="tile"><span class="k">Findings</span><span class="v {{ 'warn' if findings else '' }}">{{ findings|length }}</span><span class="d">{{ unattributed|length }} unattributed</span></div>
+</div>
+
+<div data-tabs>
+  <div class="tabs">
+    <button class="tab active" data-tab="overview">Overview</button>
+    <button class="tab" data-tab="entities">Entities</button>
+    <button class="tab" data-tab="findings">Findings</button>
+    <button class="tab" data-tab="ai">AI summary</button>
+  </div>
+
+  <div class="tabpanel active" data-panel="overview">
+    {% if program.scope_in or program.scope_out %}
+    <section class="card">
+      <h2>Scope</h2>
+      <div class="grid">
+        <div><h3>In scope</h3><pre class="scope">{{ program.scope_in or '—' }}</pre></div>
+        <div><h3>Out of scope</h3><pre class="scope">{{ program.scope_out or '—' }}</pre></div>
+      </div>
+    </section>
+    {% endif %}
+
+    <section class="card">
+      <details>
+        <summary><strong>Edit program</strong></summary>
+        <form method="post" action="/programs/{{ program.id }}/update" class="stack" style="margin-top:12px">
+          <label>Name<input name="name" value="{{ program.name }}"></label>
+          <label>Platform<input name="platform" value="{{ program.platform or '' }}" placeholder="hackerone, bugcrowd…"></label>
+          <div class="grid">
+            <label>In scope<textarea name="scope_in" rows="6" placeholder="example.com&#10;*.example.com">{{ program.scope_in or '' }}</textarea></label>
+            <label>Out of scope<textarea name="scope_out" rows="6">{{ program.scope_out or '' }}</textarea></label>
+          </div>
+          <label>Notes<textarea name="notes" rows="3">{{ program.notes or '' }}</textarea></label>
+          <div class="row">
+            <button class="primary" type="submit">Save &amp; rebuild</button>
+          </div>
+        </form>
+        <form method="post" action="/programs/{{ program.id }}/delete" style="margin-top:10px"
+              onsubmit="return confirm('Delete this program and all of its captures, entities and findings? This cannot be undone.')">
+          <button class="sm danger" type="submit">Delete program</button>
+        </form>
+      </details>
+    </section>
+
+    <section class="card">
+      <h2>Exports</h2>
+      <p class="muted">
+        <a href="/reports/{{ program.id }}/html">html</a> ·
+        <a href="/reports/{{ program.id }}/md">md</a> ·
+        <a href="/reports/{{ program.id }}/json">json</a> ·
+        <a href="/reports/{{ program.id }}/csv">csv</a> ·
+        <a href="/reports/{{ program.id }}/h1">hackerone md</a> ·
+        <a href="/reports/{{ program.id }}/sarif">sarif</a> ·
+        <a href="/reports/{{ program.id }}/targets.txt" title="in-scope hosts for nuclei -l / httpx -l">targets.txt</a>
+      </p>
+      <p class="dim">Secrets are masked in exports. Append <code>?reveal=1</code> for full values. Ignored and <em>false-positive</em> entities are excluded. SARIF is ready for GitHub code scanning / CI gates (<code>/api/v1/gate</code>).</p>
+    </section>
+
+    <div class="grid">
+      <section class="card">
+        <h2>Targets <span class="count">{{ targets|length }}</span></h2>
+        <form method="post" action="/programs/{{ program.id }}/targets" class="row" style="margin-bottom:12px">
+          <input name="name" placeholder="e.g. app.example.com or 10.0.0.0/24" required>
+          <select name="kind">
+            <option value="domain">domain</option>
+            <option value="subdomain">subdomain</option>
+            <option value="ip">ip</option>
+            <option value="cidr">cidr</option>
+            <option value="url">url</option>
+            <option value="other">other</option>
+          </select>
+          <button type="submit">Add target</button>
+        </form>
+        {% if targets %}
+        <table>
+          <thead><tr><th>Target</th><th>Kind</th><th></th></tr></thead>
+          <tbody>
+            {% for t in targets %}
+            <tr>
+              <td>
+                <form method="post" action="/programs/{{ program.id }}/targets/{{ t.id }}/update" class="row compact">
+                  <input name="name" value="{{ t.name }}" class="mono">
+                  <select name="kind">
+                    {% for k in ['domain','subdomain','ip','cidr','url','other'] %}
+                    <option value="{{ k }}" {{ 'selected' if t.kind == k else '' }}>{{ k }}</option>
+                    {% endfor %}
+                  </select>
+                  <button class="sm" type="submit">Save</button>
+                </form>
+              </td>
+              <td class="muted">{{ t.kind }}</td>
+              <td>
+                <form method="post" action="/programs/{{ program.id }}/targets/{{ t.id }}/delete"
+                      onsubmit="return confirm('Delete this target? Entities stay but become unattributed.')">
+                  <button class="sm danger" type="submit">Delete</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}<p class="empty">No targets yet.</p>{% endif %}
+      </section>
+
+      <section class="card">
+        <h2>Scope breakdown</h2>
+        <ul class="stats">
+          <li><span class="badge in">in</span> <strong>{{ scope_counts.in }}</strong> entities</li>
+          <li><span class="badge out">out</span> <strong>{{ scope_counts.out }}</strong> entities</li>
+          <li><span class="badge">unknown</span> <strong>{{ scope_counts.unknown }}</strong> entities</li>
+          <li><span class="badge x">unattributed</span> <strong>{{ unattributed|length }}</strong> entities</li>
+        </ul>
+      </section>
+    </div>
+
+    {% if unattributed %}
+    <section class="card">
+      <h2>Unattributed <span class="count">{{ unattributed|length }}</span></h2>
+      <p class="muted">These nodes matched no target. Add a target that covers them, then Rebuild.</p>
+      {{ ui.entity_groups(group_entities(unattributed)) }}
+    </section>
+    {% endif %}
+
+    {% if relationships %}
+    <section class="card">
+      <h2>Relationships <span class="count">{{ relationships|length }}</span></h2>
+      <ul class="rels">
+        {% for r in relationships %}
+        <li><span class="mono">{{ r.src_value }}</span> <span class="rel">{{ edge_labels.get(r.rel_type, r.rel_type) }}</span> <span class="mono">{{ r.dst_value }}</span></li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+  </div>
+
+  <div class="tabpanel" data-panel="entities">
+    <section class="card">
+      <h2>Collected data</h2>
+      {{ ui.entity_groups(groups) }}
+    </section>
+  </div>
+
+  <div class="tabpanel" data-panel="findings">
+    <section class="card">
+      <h2>New finding</h2>
+      <form method="post" action="/programs/{{ program.id }}/findings" class="stack">
+        <div class="row">
+          <input name="title" placeholder="finding title" required>
+          <select name="severity">
+            <option value="info">info</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+            <option value="critical">critical</option>
+          </select>
+          <select name="target_id">
+            <option value="">(no target)</option>
+            {% for t in targets %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
+          </select>
+          <input name="tags" placeholder="tags (comma separated)">
+        </div>
+        <textarea name="description" rows="3" placeholder="description / reproduction notes"></textarea>
+        <div><button class="primary" type="submit">Add finding</button></div>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Findings <span class="count">{{ findings|length }}</span></h2>
+      {% if findings %}
+      <table>
+        <thead><tr><th>Severity</th><th>Title</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          {% for f in findings %}
+          <tr>
+            <td><span class="sev sev-{{ f.severity }}">{{ f.severity }}</span></td>
+            <td>{{ f.title }}
+              {% for t in (f.tags or []) %}<span class="chip tag">{{ t }}</span>{% endfor %}
+              {% if f.description %}<div class="muted mono">{% for line in f.description.splitlines() %}{{ line }}<br>{% endfor %}</div>{% endif %}
+              {% if f.notes %}<div class="entity-note">note: {{ f.notes }}</div>{% endif %}
+            </td>
+            <td>
+              <form method="post" action="/findings/{{ f.id }}/status" class="row status-form">
+                <select name="status">
+                  {% for s in ['open', 'in-progress', 'resolved', 'wont-fix'] %}
+                  <option value="{{ s }}" {% if f.status == s %}selected{% endif %}>{{ s }}</option>
+                  {% endfor %}
+                </select>
+                <button class="sm" type="submit">set</button>
+              </form>
+            </td>
+            <td class="actions">
+              <details class="inline-details">
+                <summary>annotate</summary>
+                <form method="post" action="/findings/{{ f.id }}/annotate" class="stack">
+                  <input name="tags" value="{{ (f.tags or [])|join(', ') }}" placeholder="tags">
+                  <input name="notes" value="{{ f.notes or '' }}" placeholder="private note">
+                  <button class="sm" type="submit">save</button>
+                </form>
+              </details>
+              <form method="post" action="/findings/{{ f.id }}/delete" data-confirm="Delete finding '{{ f.title }}'?"><button class="danger" type="submit">delete</button></form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}<p class="empty">No findings recorded yet.</p>{% endif %}
+    </section>
+  </div>
+
+  <div class="tabpanel" data-panel="ai">
+    <section class="card ai-panel">
+      <div class="spread">
+        <h2>AI summary</h2>
+        <form method="post" action="/programs/{{ program.id }}/analyze" data-ai>
+          <button class="primary" type="submit" data-label="{{ 'Refresh summary' if program.ai_summary else 'Summarize with AI' }}">
+            {{ 'Refresh summary' if program.ai_summary else 'Summarize with AI' }}
+          </button>
+        </form>
+      </div>
+      {% if program.ai_summary %}
+        <div class="ai-meta">
+          <span class="chip">{{ program.ai_model or 'unknown model' }}</span>
+          {% if program.ai_at %}<span>{{ program.ai_at.strftime('%Y-%m-%d %H:%M UTC') }}</span>{% endif %}
+        </div>
+        <div class="ai-md">{{ program.ai_summary }}</div>
+      {% else %}
+        <p class="ai-empty">No summary yet. Run <strong>Summarize with AI</strong> to have your local model brief you on this program's collected recon.</p>
+      {% endif %}
+    </section>
+  </div>
+</div>
+{% endblock %}

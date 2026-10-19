@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui with context %}
+{% block title %}Inbox · Breadcrumb{% endblock %}
+{% block crumb %}Inbox{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>Paste / import</h2>
+  <p class="muted">Drop raw tool output. Assign a program now, or leave it here and sort it later.</p>
+  <form method="post" action="/paste" class="stack" enctype="multipart/form-data">
+    <textarea name="text" rows="10" placeholder="paste raw output here… (or attach a file below)"></textarea>
+    <label class="field">…or upload a file (nmap text/greppable/XML, nuclei JSONL, any text — max 5 MB)
+      <input type="file" name="upload">
+    </label>
+    <div class="row">
+      <select name="program_id">
+        <option value="">(unassigned)</option>
+        {% for p in programs %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
+      </select>
+      <select name="target_id">
+        <option value="">(no target)</option>
+        {% for t in targets %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
+      </select>
+      <select name="source">
+        <option value="manual">manual paste</option>
+        <option value="clipboard">clipboard</option>
+        <option value="file">file import</option>
+      </select>
+      <button class="primary" type="submit">Analyze</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="spread">
+    <h2>Unsorted entities <span class="count">{{ unassigned_count }}</span></h2>
+  </div>
+  {% if unassigned_count %}
+  <p class="muted">Captured without a program. Open a capture to assign it, or delete noise.</p>
+  {% endif %}
+  {{ ui.entity_groups(groups, editable=true) }}
+</section>
+
+<section class="card">
+  <h2>Capture history <span class="count">{{ pastes|length }}</span></h2>
+  {% if pastes %}
+  <table>
+    <thead><tr><th>#</th><th>When</th><th>Source</th><th>Parsers</th><th>Preview</th></tr></thead>
+    <tbody>
+      {% for pa in pastes %}
+      <tr>
+        <td><a href="/pastes/{{ pa.id }}">{{ pa.id }}</a></td>
+        <td class="muted">{{ pa.created_at.strftime('%Y-%m-%d %H:%M UTC') }}</td>
+        <td class="muted">{{ pa.source }}</td>
+        <td>{% for pr in (pa.parsers or []) %}<span class="chip">{{ pr }}</span> {% endfor %}</td>
+        <td class="mono preview">{{ pa.raw[:90]|replace('\n', ' ') }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No captures yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

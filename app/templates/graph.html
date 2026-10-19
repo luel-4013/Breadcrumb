@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui with context %}
+{% block title %}{{ program.name }} · Graph · Breadcrumb{% endblock %}
+{% block crumb %}{{ program.name }} <span class="sep">/</span> <span class="sub">Graph</span>{% endblock %}
+
+{% block actions %}
+  <a class="btn ghost sm" href="/programs/{{ program.id }}">Back to program</a>
+  <form method="post" action="/programs/{{ program.id }}/rebuild"><button class="btn sm" type="submit">Rebuild</button></form>
+{% endblock %}
+
+{% block content %}
+<section class="card">
+  <div class="spread">
+    <div>
+      <h2>{{ program.name }} · knowledge graph</h2>
+      <p class="muted">Every node tied to its target, with the edges that connect them.</p>
+    </div>
+  </div>
+  <ul class="stats">
+    <li><strong>{{ targets|length }}</strong> targets</li>
+    <li><strong>{{ edge_count }}</strong> edges</li>
+    <li><strong>{{ loose|length }}</strong> unattributed</li>
+  </ul>
+</section>
+
+<div id="graphCanvas"></div>
+<script>window.__CLUSTERS = {{ clusters|tojson }};</script>
+
+{% for group in groups %}
+<section class="card">
+  <h3 class="graph-target">{{ group.target.name }} <span class="muted">({{ group.target.kind }})</span></h3>
+  {% if group.entities %}
+    {{ ui.entity_groups(group_entities(group.entities)) }}
+  {% else %}
+    <p class="empty">No nodes attributed to this target yet.</p>
+  {% endif %}
+  {% if group.edges %}
+  <h4>Edges <span class="count">{{ group.edges|length }}</span></h4>
+  <ul class="rels">
+    {% for r in group.edges %}
+    <li>
+      <span class="mono">{{ r.src_value }}</span>
+      <span class="rel">{{ edge_labels.get(r.rel_type, r.rel_type) }}</span>
+      <span class="mono">{{ r.dst_value }}</span>
+      <span class="chip src-{{ r.source }}">{{ r.source }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+{% else %}
+<p class="empty">No targets yet. Add a target to start attributing your recon.</p>
+{% endfor %}
+
+<section class="card">
+  <h3 class="graph-target">Unattributed <span class="count">{{ loose|length }}</span></h3>
+  {% if loose %}
+  <p class="muted">These nodes did not match any target or scope rule. Assign them or add a target.</p>
+  {{ ui.entity_groups(group_entities(loose)) }}
+  {% else %}
+  <p class="empty">Everything is attributed.</p>
+  {% endif %}
+  {% if loose_edges %}
+  <h4>Edges <span class="count">{{ loose_edges|length }}</span></h4>
+  <ul class="rels">
+    {% for r in loose_edges %}
+    <li>
+      <span class="mono">{{ r.src_value }}</span>
+      <span class="rel">{{ edge_labels.get(r.rel_type, r.rel_type) }}</span>
+      <span class="mono">{{ r.dst_value }}</span>
+      <span class="chip src-{{ r.source }}">{{ r.source }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+{% endblock %}

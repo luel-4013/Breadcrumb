@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}Runners · Breadcrumb{% endblock %}
+{% block crumb %}Runners{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>Scan runners</h2>
+  <p class="muted">
+    Breadcrumb is import-first: runners are external tools that
+    <strong>POST output back to <code>/api/v1/pastes</code></strong> and move jobs
+    through <code>queued → running → done</code>. Queue a job here (or via the API),
+    run the tool wherever you like, pipe the output in.
+  </p>
+  <form method="post" action="/jobs" class="row">
+    <select name="runner">
+      {% for r in runners %}<option value="{{ r.id }}">{{ r.label }}</option>{% endfor %}
+    </select>
+    <input name="target" placeholder="target (domain, ip, cidr…)" required>
+    <select name="program_id">
+      <option value="">(no program)</option>
+      {% for p in programs %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
+    </select>
+    <select name="header_profile_id">
+      <option value="">(default headers)</option>
+      {% for h in profiles %}<option value="{{ h.id }}">{{ h.name }}</option>{% endfor %}
+    </select>
+    <button class="primary" type="submit">Queue job</button>
+  </form>
+</section>
+
+{% for d in described|groupby('runner.category') %}
+<section class="card">
+  <h2>{{ d.grouper|title }} runners</h2>
+  <table>
+    <thead><tr><th>Runner</th><th>What it does</th><th>Binary</th><th>Active</th><th></th></tr></thead>
+    <tbody>
+      {% for d2 in d.list %}
+      {% set r = d2.runner %}
+      <tr>
+        <td><strong>{{ r.label }}</strong><br><span class="chip mono">{{ r.id }}</span></td>
+        <td class="muted">{{ r.description }}
+          {% if r.example %}<br><code class="mono">{{ r.example }}</code>{% endif %}
+        </td>
+        <td>
+          {% if d2.binary_found %}<span class="badge in">on server</span>
+          {% else %}<span class="badge" title="not on this server's PATH — install it where the executor runs">elsewhere</span>{% endif %}
+          <div class="dim mono">{{ d2.binary }}</div>
+        </td>
+        <td>
+          {% if d2.custom %}
+            <span class="badge in">always</span>
+          {% else %}
+            <form method="post" action="/runners/toggle">
+              <input type="hidden" name="runner_id" value="{{ r.id }}">
+              <input type="hidden" name="enabled" value="{{ '' if d2.enabled else 'on' }}">
+              <button class="sm {{ '' if d2.enabled else 'primary' }}" type="submit">{{ 'on' if d2.enabled else 'off' }}</button>
+            </form>
+          {% endif %}
+        </td>
+        <td class="actions">
+          {% if d2.custom %}
+            <a class="btn sm ghost" href="/runners/custom/{{ d2.custom_id }}/verify">verify</a>
+            <form method="post" action="/runners/custom/{{ d2.custom_id }}/delete" style="display:inline" data-confirm="Delete runner '{{ r.id }}'?"><button class="danger" type="submit">delete</button></form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endfor %}
+
+<section class="card">
+  <h2>Add your own runner</h2>
+  <p class="muted">Register any tool: id, label, and the example command executors should run. New runners are validated on save (id format, uniqueness, example sanity, binary presence) and are always active. Jobs only accept <strong>active</strong> runners.</p>
+  <form method="post" action="/runners/custom" class="stack">
+    <div class="row">
+      <input name="runner_id" placeholder="id (e.g. ffuf)" required pattern="[a-z0-9][a-z0-9-]{1,40}">
+      <input name="label" placeholder="label (e.g. Ffuf)">
+    </div>
+    <input name="description" placeholder="description">
+    <input name="example" placeholder="example command (e.g. ffuf -u https://target/FUZZ -w wordlist)">
+    <div><button type="submit">Add runner</button></div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="spread">
+    <h2>Job queue <span class="count">{{ jobs|length }}</span></h2>
+    {% if jobs %}
+    <form method="post" action="/jobs/clear" data-confirm="Remove all finished/failed/cancelled jobs?">
+      <button class="ghost sm" type="submit">Clear finished</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if jobs %}
+  <table>
+    <thead><tr><th>#</th><th>Runner</th><th>Target</th><th>Status</th><th>Headers</th><th>Program</th><th>Queued</th><th></th></tr></thead>
+    <tbody>
+      {% for j in jobs %}
+      <tr>
+        <td><a href="/jobs/{{ j.id }}">{{ j.id }}</a></td>
+        <td><span class="chip mono">{{ j.runner }}</span></td>
+        <td class="mono">{{ j.target or '—' }}</td>
+        <td><span class="badge st-{{ j.status }}">{{ j.status }}</span></td>
+        <td class="muted">{{ profile_names.get(j.header_profile_id, '—') if j.header_profile_id else '—' }}</td>
+        <td class="muted">{{ j.program_id or '—' }}</td>
+        <td class="muted">{{ j.created_at.strftime('%Y-%m-%d %H:%M UTC') if j.created_at else '' }}</td>
+        <td class="actions">
+          <a class="btn sm ghost" href="/jobs/{{ j.id }}">view</a>
+          {% if j.status in ['queued', 'running'] %}
+          <form method="post" action="/jobs/{{ j.id }}/cancel" style="display:inline"><button class="sm" type="submit">cancel</button></form>
+          {% else %}
+          <form method="post" action="/jobs/{{ j.id }}/retry" style="display:inline"><button class="sm" type="submit">retry</button></form>
+          {% endif %}
+          <form method="post" action="/jobs/{{ j.id }}/delete" style="display:inline" data-confirm="Delete job #{{ j.id }}?"><button class="danger" type="submit">delete</button></form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <span class="es-icon">▶</span>
+    <h3>No jobs queued</h3>
+    <p>Queue one above, or <code>POST /api/v1/jobs</code> from your tooling.</p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

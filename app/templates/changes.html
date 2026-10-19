@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}{{ program.name }} · Changes · Breadcrumb{% endblock %}
+{% block crumb %}{{ program.name }} <span class="sep">/</span> <span class="sub">Changes</span>{% endblock %}
+
+{% block actions %}
+  <a class="btn ghost sm" href="/programs/{{ program.id }}">Back to program</a>
+  {% if changes.pastes %}
+  <form method="post" action="/programs/{{ program.id }}/changes/notify"><button class="btn sm" type="submit">Notify channels</button></form>
+  {% endif %}
+{% endblock %}
+
+{% block content %}
+<section class="card">
+  <div class="spread">
+    <div>
+      <h2>What changed</h2>
+      <p class="muted">Latest capture vs everything before it — Amass-<code>track</code> style, offline.</p>
+    </div>
+  </div>
+  {% if changes.pastes %}
+  <ul class="stats">
+    <li><strong>{{ changes.pastes|length }}</strong> captures</li>
+    <li><span class="badge in">+{{ changes.added|length }}</span> new in latest</li>
+    <li><span class="badge out">−{{ changes.removed|length }}</span> gone vs before</li>
+  </ul>
+  {% endif %}
+</section>
+
+{% if changes.pastes %}
+<section class="card">
+  <h2>Capture timeline</h2>
+  <div class="timeline">
+    {% for p in changes.pastes|reverse %}
+    <div class="tl-item">
+      <span class="tl-dot"></span>
+      <div class="tl-body">
+        <div><a href="/pastes/{{ p.id }}">Capture #{{ p.id }}</a>
+          <span class="chip">{{ (p.parsers or [])|join(', ') or 'no parser' }}</span>
+          <span class="chip">{{ p.entity_count }} entities</span></div>
+        <div class="tl-time">{{ p.created_at.strftime('%Y-%m-%d %H:%M UTC') if p.created_at else '' }} · {{ p.source }}</div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<div class="grid">
+  <section class="card">
+    <h2>New in latest <span class="count">{{ changes.added|length }}</span></h2>
+    {% if changes.added %}
+    <table>
+      <thead><tr><th>Type</th><th>Value</th></tr></thead>
+      <tbody>
+        {% for t, v in changes.added %}
+        <tr><td><span class="chip">{{ t }}</span></td><td class="mono">{{ v }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<p class="empty">Nothing new.</p>{% endif %}
+  </section>
+
+  <section class="card">
+    <h2>No longer seen <span class="count">{{ changes.removed|length }}</span></h2>
+    {% if changes.removed %}
+    <table>
+      <thead><tr><th>Type</th><th>Value</th></tr></thead>
+      <tbody>
+        {% for t, v in changes.removed %}
+        <tr><td><span class="chip">{{ t }}</span></td><td class="mono">{{ v }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<p class="empty">Nothing disappeared.</p>{% endif %}
+  </section>
+</div>
+{% else %}
+<div class="empty-state">
+  <span class="es-icon">◔</span>
+  <h3>No captures yet</h3>
+  <p>Ingest at least one capture for this program to see changes.</p>
+</div>
+{% endif %}
+{% endblock %}

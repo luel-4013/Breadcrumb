@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Ledger · Breadcrumb{% endblock %}
+{% block crumb %}Ledger{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>Cross-program ledger</h2>
+  <p class="muted">
+    Assets you have seen before — across <strong>{{ program_count }}</strong> program(s) in this
+    notebook. When a host, port, secret or finding appears in more than one program,
+    it shows up here. This is memory no single-engagement scanner keeps: test once,
+    remember everywhere.
+  </p>
+</section>
+
+<section class="card">
+  {% if assets %}
+  <table>
+    <thead><tr><th>Type</th><th>Asset</th><th>Programs</th></tr></thead>
+    <tbody>
+      {% for a in assets %}
+      <tr>
+        <td><span class="chip mono">{{ a.type }}</span></td>
+        <td class="mono">{{ a.value }}</td>
+        <td>
+          <span class="badge in" title="{{ a.count }} programs">seen in {{ a.count }}</span>
+          {% for p in a.programs %}
+            <a class="chip" href="/programs/{{ p.id }}">{{ p.name }}</a>
+          {% endfor %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No asset has appeared in more than one program yet. Ingest into two programs that share a host and it appears here.</p>
+  {% endif %}
+</section>
+{% endblock %}

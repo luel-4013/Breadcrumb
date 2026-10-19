@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+{% block title %}Settings · Breadcrumb{% endblock %}
+{% block crumb %}Settings{% endblock %}
+{% block content %}
+<section class="card">
+  <h2>AI providers</h2>
+  <p class="muted">
+    Point Breadcrumb at a local OpenAI-compatible server. Jan's Local API Server is
+    <span class="mono">http://127.0.0.1:1337/v1</span> (enable it in Jan → Settings → Local API Server).
+    LM Studio is <span class="mono">http://127.0.0.1:1234/v1</span>. Data stays local unless you add a remote URL.
+  </p>
+
+  <form method="post" action="/settings" class="stack">
+    {% for p in config.providers %}
+    <fieldset class="provider">
+      <legend>{{ p.label or p.id }}</legend>
+      <input type="hidden" name="provider_{{ loop.index0 }}_id" value="{{ p.id }}">
+      <div class="row">
+        <label class="field">Label
+          <input name="provider_{{ loop.index0 }}_label" value="{{ p.label }}">
+        </label>
+        <label class="field grow">Base URL
+          <input name="provider_{{ loop.index0 }}_base_url" value="{{ p.base_url }}" class="mono">
+        </label>
+      </div>
+      <div class="row">
+        <label class="field grow">API key (optional)
+          <input name="provider_{{ loop.index0 }}_api_key" value="{{ p.api_key }}" class="mono" autocomplete="off">
+        </label>
+        <label class="check">
+          <input type="checkbox" name="provider_{{ loop.index0 }}_enabled" {% if p.enabled %}checked{% endif %}>
+          enabled
+        </label>
+      </div>
+    </fieldset>
+    {% endfor %}
+
+    <div class="row">
+      <label class="field">Active provider
+        <select name="active_provider">
+          {% for p in config.providers %}
+          <option value="{{ p.id }}" {% if config.active_provider == p.id %}selected{% endif %}>{{ p.label or p.id }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="field">Autonomy
+        <select name="autonomy">
+          <option value="suggest" {% if config.autonomy == 'suggest' %}selected{% endif %}>suggest only (review everything)</option>
+          <option value="auto" {% if config.autonomy == 'auto' %}selected{% endif %}>auto-apply high-confidence</option>
+        </select>
+      </label>
+      <label class="check">
+        <input type="checkbox" name="cloud_opt_in" {% if config.cloud_opt_in %}checked{% endif %}>
+        allow cloud providers
+      </label>
+    </div>
+
+    <h3>Task routing</h3>
+    <p class="muted">Which model handles each kind of job. Swap to your installed models.</p>
+    <div class="routes">
+      {% for task in task_classes %}
+      <label class="field grow">
+        {{ task_labels.get(task, task) }}
+        <input name="route_{{ task }}" value="{{ config.routing.get(task, '') }}" class="mono" placeholder="model id">
+      </label>
+      {% endfor %}
+    </div>
+
+    <div class="row">
+      <button type="submit">Save settings</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Test connection</h2>
+  <p class="muted">Probes <span class="mono">/models</span> and sends a tiny chat ping.</p>
+  <form method="post" action="/settings/test" class="row">
+    <input name="test_base_url" class="mono grow" value="{{ config.providers[0].base_url if config.providers else '' }}" placeholder="http://127.0.0.1:1337/v1">
+    <input name="test_api_key" class="mono" placeholder="api key (optional)" autocomplete="off">
+    <input name="test_model" class="mono" placeholder="model id (optional)">
+    <button type="submit">Test</button>
+  </form>
+
+  {% if test_result %}
+  <div class="test-result {{ 'ok' if test_result.ok else 'fail' }}">
+    <strong>{{ 'OK' if test_result.ok else 'FAILED' }}</strong>
+    {% if test_result.latency_ms is defined %}<span class="muted">· {{ test_result.latency_ms }} ms</span>{% endif %}
+    {% if test_result.error %}<div class="mono">{{ test_result.error }}</div>{% endif %}
+    {% if test_result.ping_model %}<div class="muted">pinged <span class="mono">{{ test_result.ping_model }}</span>{% if test_result.model_reply %} → “{{ test_result.model_reply }}”{% endif %}</div>{% endif %}
+    {% if test_result.models %}
+    <div class="muted">{{ test_result.models|length }} models available:</div>
+    <div class="chips">{% for m in test_result.models %}<span class="chip mono">{{ m }}</span>{% endfor %}</div>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Notifications</h2>
+  <p class="muted">
+    Off by default — nothing leaves your machine until you add a channel. Fires on new
+    findings at or above the severity floor, and on demand from a program's
+    <a href="/">Changes</a> page. Requests time out in a few seconds and never block ingest.
+  </p>
+  <form method="post" action="/settings/notify" class="stack">
+    <label class="check">
+      <input type="checkbox" name="notify_enabled" {% if notify_config.enabled %}checked{% endif %}>
+      notifications enabled
+    </label>
+    <div class="row">
+      <label class="field">Minimum severity
+        <select name="min_severity">
+          {% for s in severities %}<option value="{{ s }}" {% if notify_config.min_severity == s %}selected{% endif %}>{{ s }}</option>{% endfor %}
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" name="on_new_findings" {% if notify_config.on_new_findings %}checked{% endif %}> on new findings</label>
+      <label class="check"><input type="checkbox" name="on_scope_changes" {% if notify_config.on_scope_changes %}checked{% endif %}> on surface changes</label>
+    </div>
+    <div class="row">
+      <label class="field grow">Discord webhook
+        <input name="discord_url" class="mono" value="{{ notify_config.discord_url }}" placeholder="https://discord.com/api/webhooks/…">
+      </label>
+      <label class="field grow">Slack webhook
+        <input name="slack_url" class="mono" value="{{ notify_config.slack_url }}" placeholder="https://hooks.slack.com/services/…">
+      </label>
+    </div>
+    <div class="row">
+      <label class="field grow">Telegram bot token
+        <input name="telegram_token" class="mono" value="{{ notify_config.telegram_token }}">
+      </label>
+      <label class="field grow">Telegram chat id
+        <input name="telegram_chat" class="mono" value="{{ notify_config.telegram_chat }}">
+      </label>
+    </div>
+    <label class="field">Generic webhook (receives JSON POST)
+      <input name="webhook_url" class="mono" value="{{ notify_config.webhook_url }}" placeholder="https://example.com/hook">
+    </label>
+    <div class="row">
+      <button type="submit">Save notifications</button>
+      <span class="muted">{{ 'configured: ' ~ notify_targets|join(', ') if notify_targets else 'no channels configured' }}</span>
+    </div>
+  </form>
+
+  <form method="post" action="/settings/notify/test" class="row" style="margin-top:10px">
+    <input type="hidden" name="discord_url" value="{{ notify_config.discord_url }}">
+    <input type="hidden" name="slack_url" value="{{ notify_config.slack_url }}">
+    <input type="hidden" name="telegram_token" value="{{ notify_config.telegram_token }}">
+    <input type="hidden" name="telegram_chat" value="{{ notify_config.telegram_chat }}">
+    <input type="hidden" name="webhook_url" value="{{ notify_config.webhook_url }}">
+    <button type="submit">Send test</button>
+  </form>
+
+  {% if notify_test %}
+  <div class="test-result {{ 'ok' if notify_test.sent else 'fail' }}">
+    <strong>{{ 'sent' if notify_test.sent else 'not sent' }}</strong>
+    {% if notify_test.results %}
+    <div class="chips">{% for r in notify_test.results %}<span class="chip">{{ r.channel }}: {{ 'ok' if r.ok else r.detail }}</span>{% endfor %}</div>
+    {% else %}<div class="muted">no channels configured</div>{% endif %}
+  </div>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Backup & restore</h2>
+  <p class="muted">The whole database is one SQLite file. Download it, or restore from a backup.</p>
+  <div class="row">
+    <a class="btn" href="/api/v1/backup">Download backup</a>
+    <form method="post" action="/backup/restore" enctype="multipart/form-data" class="row" data-confirm="Replace the entire database with this backup file?">
+      <input type="file" name="upload" required>
+      <button type="submit">Restore</button>
+    </form>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Privacy</h2>
+  <p class="muted">
+    Default is fully local: no cloud calls, no telemetry. Cloud providers only run when
+    <em>allow cloud providers</em> is on <strong>and</strong> a remote base URL is active.
+  </p>
+</section>
+{% endblock %}
