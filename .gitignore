@@ -6,6 +6,7 @@ __pycache__/
 *.sqlite
 *.sqlite3
 *.db.pre-migrate-*.bak
+*.bak
 breadcrumb.llm.json
 breadcrumb.notify.json
 .env
