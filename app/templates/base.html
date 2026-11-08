@@ -3,8 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ request.state.csrf_token }}">
   <title>{% block title %}Breadcrumb{% endblock %}</title>
-  <link rel="stylesheet" href="/static/app.css?v=3">
+  <link rel="stylesheet" href="/static/app.css?v=4">
 </head>
 <body>
   {% set nav = request.state.nav_programs if request else [] %}
@@ -77,6 +78,12 @@
         <div class="top-actions">{% block actions %}{% endblock %}</div>
       </header>
       <main class="content">
+        {% if request.state.maintenance and request.state.maintenance.maintenance %}
+        <div class="warn-box">
+          <strong>Maintenance mode.</strong>
+          Native workers will not claim jobs{% if request.state.maintenance.maintenance_reason %}: {{ request.state.maintenance.maintenance_reason }}{% endif %}.
+        </div>
+        {% endif %}
         {% block content %}{% endblock %}
       </main>
       <footer class="foot">
@@ -109,6 +116,6 @@
   </dialog>
 
   <div class="toasts" id="toasts"></div>
-  <script src="/static/app.js?v=3" defer></script>
+  <script src="/static/app.js?v=4" defer></script>
 </body>
 </html>

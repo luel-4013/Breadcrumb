@@ -51,7 +51,7 @@ class URLParser(Parser):
                         confidence=0.6,
                     )
                 )
-            for key in parse_qs(parsed.query).keys():
+            for key in parse_qs(parsed.query, keep_blank_values=True).keys():
                 entities.append(
                     Entity(
                         type="param",

@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}History · {{ target.name }} · Breadcrumb{% endblock %}
+{% block crumb %}
+{% if program %}<a href="/programs/{{ program.id }}">{{ program.name }}</a> <span class="sep">/</span> {% endif %}
+<span class="sub">{{ target.name }}</span> <span class="sep">/</span> history
+{% endblock %}
+
+{% block actions %}
+  {% if program %}<a class="btn ghost sm" href="/programs/{{ program.id }}">Program</a>{% endif %}
+  <a class="btn ghost sm" href="/runners">Runners</a>
+  <form method="post" action="/targets/{{ target.id }}/history/rebuild">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+    <button class="btn sm" type="submit">Rebuild snapshots</button>
+  </form>
+{% endblock %}
+
+{% block content %}
+{% if request.query_params.get('msg') %}<div class="warn-box">{{ request.query_params.get('msg') }}</div>{% endif %}
+
+<div class="tiles">
+  <div class="tile"><span class="k">Scans</span><span class="v">{{ history.totals.scans }}</span><span class="d">{{ history.totals.completed }} completed · {{ history.totals.failed }} failed</span></div>
+  <div class="tile"><span class="k">Target</span><span class="v mono" style="font-size:1rem">{{ target.name }}</span><span class="d">{{ target.kind }}</span></div>
+  <div class="tile"><span class="k">Latest scan</span><span class="v">#{{ history.totals.latest_scan_id or '—' }}</span><span class="d">{{ history.totals.latest_scan_at or 'never' }}</span></div>
+</div>
+
+<section class="card">
+  <h2>Timeline</h2>
+  {% if history.scans %}
+  <table>
+    <thead><tr><th>#</th><th>When</th><th>Status</th><th>Risk</th><th>Findings</th><th>Changes</th><th></th></tr></thead>
+    <tbody>
+      {% for scan in history.scans %}
+      <tr>
+        <td><a href="/jobs/{{ scan.job_id }}">#{{ scan.job_id }}</a></td>
+        <td class="muted">{{ scan.created_at or '—' }}</td>
+        <td><span class="badge st-{{ scan.status }}">{{ scan.status }}</span>
+          {% if scan.snapshot_status and scan.snapshot_status != 'ready' %}<span class="chip tag">{{ scan.snapshot_status }}</span>{% endif %}
+        </td>
+        <td>
+          {% if scan.risk_level %}<span class="sev sev-{{ scan.risk_level if scan.risk_level in ['critical','high','medium','low'] else 'info' }}">{{ scan.risk_level }}</span>
+          <span class="muted">{{ scan.risk_score }}/100</span>{% else %}—{% endif %}
+        </td>
+        <td class="muted">{{ scan.finding_count if scan.finding_count is not none else '—' }}</td>
+        <td class="muted">
+          {% if scan.changes %}
+            {% set c = scan.changes %}
+            {% if c.new_findings %}<span class="badge out">+{{ c.new_findings }} findings</span>{% endif %}
+            {% if c.ports_opened %}<span class="badge out">+{{ c.ports_opened }} ports</span>{% endif %}
+            {% if c.subdomains_added %}<span class="badge out">+{{ c.subdomains_added }} subdomains</span>{% endif %}
+            {% if c.risk_delta %}<span class="chip tag">risk {{ '%+d'|format(c.risk_delta) }}</span>{% endif %}
+            {% if not (c.new_findings or c.ports_opened or c.subdomains_added or c.risk_delta) %}<span class="dim">no material change</span>{% endif %}
+          {% else %}—{% endif %}
+        </td>
+        <td class="actions">
+          <a class="btn sm ghost" href="/jobs/{{ scan.job_id }}">job</a>
+          <a class="btn sm ghost" href="/jobs/{{ scan.job_id }}/report.pdf">pdf</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No scans for this target yet. Queue a native collector from <a href="/runners">Runners</a>.</p>
+  {% endif %}
+</section>
+
+{% if selected_diff %}
+<section class="card">
+  <div class="spread">
+    <h2>Diff: #{{ selected_diff.from_scan.job_id }} → #{{ selected_diff.to_scan.job_id }}</h2>
+    <span class="chip mono">{{ selected_diff.summary.risk_delta }} risk</span>
+  </div>
+  <div class="grid">
+    <div>
+      <h3>Findings</h3>
+      <ul class="stats">
+        <li><span class="badge out">new</span> <strong>{{ selected_diff.summary.new_findings }}</strong></li>
+        <li><span class="badge in">resolved</span> <strong>{{ selected_diff.summary.removed_findings }}</strong></li>
+        <li><span class="badge x">changed</span> <strong>{{ selected_diff.summary.changed_findings }}</strong></li>
+      </ul>
+      {% for finding in selected_diff.findings.new %}
+      <p><span class="sev sev-{{ finding.severity }}">{{ finding.severity }}</span> {{ finding.title }}
+        {% if finding.triage_status != 'open' %}<span class="chip tag">{{ finding.triage_status }}</span>{% endif %}</p>
+      {% endfor %}
+      {% for change in selected_diff.findings.changed %}
+      <p class="muted"><strong>{{ change.after.title }}</strong>:
+        {% for field in change.changes %}{{ field.field }} {{ field.before }} → {{ field.after }}{% if not loop.last %}, {% endif %}{% endfor %}
+      </p>
+      {% endfor %}
+    </div>
+    <div>
+      <h3>Surface</h3>
+      <ul class="stats">
+        <li><span class="badge out">opened</span> <strong>{{ selected_diff.summary.ports_opened }}</strong> ports</li>
+        <li><span class="badge in">closed</span> <strong>{{ selected_diff.summary.ports_closed }}</strong> ports</li>
+        <li><span class="badge out">added</span> <strong>{{ selected_diff.summary.subdomains_added }}</strong> subdomains</li>
+        <li><span class="badge in">removed</span> <strong>{{ selected_diff.summary.subdomains_removed }}</strong> subdomains</li>
+        <li><span class="badge out">added</span> <strong>{{ selected_diff.summary.endpoints_added }}</strong> endpoints</li>
+        <li><span class="badge in">removed</span> <strong>{{ selected_diff.summary.endpoints_removed }}</strong> endpoints</li>
+        <li><span class="badge out">added</span> <strong>{{ selected_diff.summary.technologies_added }}</strong> technologies</li>
+        <li><span class="badge in">removed</span> <strong>{{ selected_diff.summary.technologies_removed }}</strong> technologies</li>
+      </ul>
+      {% if selected_diff.ports.opened %}<p><strong>New ports:</strong> <span class="mono">{{ selected_diff.ports.opened|join(', ') }}</span></p>{% endif %}
+      {% if selected_diff.subdomains.added %}<p><strong>New subdomains:</strong> <span class="mono">{{ selected_diff.subdomains.added|join(', ') }}</span></p>{% endif %}
+      {% if selected_diff.technology_versions.version_changed %}
+      <p><strong>Version changes:</strong>
+        {% for change in selected_diff.technology_versions.version_changed %}{{ change.product }} {{ change.before }} → {{ change.after }}{% if not loop.last %}, {% endif %}{% endfor %}
+      </p>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Choose a diff</h2>
+  <form method="get" action="/targets/{{ target.id }}/history" class="row">
+    <select name="from_scan">
+      {% for scan in history.scans if scan.snapshot_status == 'ready' %}
+      <option value="{{ scan.job_id }}" {{ 'selected' if from_scan == scan.job_id else '' }}>from #{{ scan.job_id }}</option>
+      {% endfor %}
+    </select>
+    <select name="to_scan">
+      {% for scan in history.scans if scan.snapshot_status == 'ready' %}
+      <option value="{{ scan.job_id }}" {{ 'selected' if to_scan == scan.job_id else '' }}>to #{{ scan.job_id }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Show diff</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

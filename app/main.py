@@ -1,41 +1,87 @@
 import hashlib
+import hmac
+import json
+import os
 import re
+import secrets
+import sqlite3
+import sys
+import tempfile
+import threading
 from collections import Counter
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import Text as SAText
 from sqlalchemy import cast
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, func, select
 
-from . import __version__, ai, graph, headers_gen, llm, notify, pipeline as pipeline_mod, reporting, runners
+from . import (
+    __version__,
+    ai,
+    graph,
+    headers_gen,
+    history,
+    llm,
+    notify,
+    pdf_export,
+    pipeline as pipeline_mod,
+    reporting,
+    runners,
+    triage,
+)
+from . import ingest as ingest_mod
 from .attribution import (
-    consolidate_entities,
     merge_into_program,
     rebuild_all,
     rebuild_program,
 )
-from .db import DB_PATH, engine, get_session, init_db
+from .collect import adapter_ids, adapters_enabled, collector_ids
+from .collect.tools import strict_mode
+from .compat import router as compat_router
+from .db import (
+    DB_PATH,
+    SCHEMA_VERSION,
+    backup_database,
+    engine,
+    get_app_state,
+    get_session,
+    init_db,
+    restore_database,
+)
+from .jobs import queue as jobs_queue
+from .jobs import run_once as run_native_job
 from .models import (
     CustomRunner,
     Entity,
+    EvidenceChain,
     Finding,
     HeaderProfile,
+    JobAttempt,
+    JobEvent,
     Paste,
     Program,
     Relationship,
     RunnerToggle,
     ScanJob,
+    ScanPhase,
+    ScanSnapshot,
     Target,
 )
-from .parsers import analyze, extract_findings
-from .takeover import detect_takeovers
+from .parsers import analyze
 
 APP_VERSION = __version__
 
@@ -45,10 +91,28 @@ BASE = Path(__file__).resolve().parent
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # Lease recovery on start makes crash-left jobs runnable again even before
+    # the first worker poll. Claiming also runs recovery, so this is a safety
+    # net rather than the only path.
+    try:
+        jobs_queue.recover_expired()
+    except Exception:  # noqa: BLE001  (never block web startup on queue recovery)
+        pass
+    stop_worker = None
+    mode = os.environ.get("BREADCRUMB_EXECUTOR", "off").strip().lower()
+    if mode == "inline":
+        from .jobs.worker import start_background_worker
+
+        stop_worker = start_background_worker(
+            poll_interval=float(os.environ.get("BREADCRUMB_WORKER_POLL", "2") or 2),
+        )
     yield
+    if stop_worker is not None:
+        stop_worker()
 
 
 app = FastAPI(title="Breadcrumb", lifespan=lifespan)
+app.include_router(compat_router)
 app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE / "templates"))
 
@@ -63,10 +127,171 @@ async def inject_nav(request: Request, call_next):
             request.state.unassigned_count = session.exec(
                 select(func.count()).select_from(Entity).where(Entity.program_id == None)  # noqa: E711
             ).one()
+            request.state.maintenance = get_app_state(session)
     except Exception:  # noqa: BLE001  (never let nav break a page)
         request.state.nav_programs = []
         request.state.unassigned_count = 0
+        request.state.maintenance = None
     return await call_next(request)
+
+
+CSRF_COOKIE = "bc_csrf"
+SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+FORM_CONTENT_TYPES = ("application/x-www-form-urlencoded", "multipart/form-data")
+
+
+def _host_key(value: str) -> str:
+    """Lowercase a Host/Origin authority and strip its port and IPv6 brackets."""
+    value = (value or "").strip().lower()
+    if value.startswith("["):
+        end = value.find("]")
+        return value[1:end] if end != -1 else value
+    if value.count(":") == 1:
+        return value.rsplit(":", 1)[0]
+    return value
+
+
+def _allowed_hosts() -> set[str]:
+    raw = os.environ.get("BREADCRUMB_ALLOWED_HOSTS", "")
+    hosts = {"127.0.0.1", "localhost", "::1"}
+    hosts.update(_host_key(part) for part in raw.split(",") if part.strip())
+    return hosts
+
+
+def _host_allowed(value: str) -> bool:
+    return _host_key(value) in _allowed_hosts()
+
+
+def _authority(value: str, default_port: int | None) -> tuple[str, int | None]:
+    """Return (lowercase host, port) for a Host/authority value."""
+    try:
+        parsed = urlparse(f"//{value}")
+        return (parsed.hostname or "").lower(), parsed.port or default_port
+    except ValueError:
+        return "", None
+
+
+def _boundary_response(message: str, status_code: int = 403) -> PlainTextResponse:
+    return PlainTextResponse(message, status_code=status_code)
+
+
+def _replay_receive(body: bytes):
+    """An ASGI receive that replays one buffered request body."""
+
+    sent = False
+
+    async def receive():
+        nonlocal sent
+        if not sent:
+            sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        return {"type": "http.disconnect"}
+
+    return receive
+
+
+async def _read_body(receive) -> tuple[bytes, bool]:
+    chunks: list[bytes] = []
+    while True:
+        message = await receive()
+        if message["type"] == "http.disconnect":
+            return b"".join(chunks), False
+        if message["type"] != "http.request":
+            continue
+        chunks.append(message.get("body", b""))
+        if not message.get("more_body", False):
+            return b"".join(chunks), True
+
+
+class LocalBoundaryMiddleware:
+    """Reject DNS-rebinding Host headers and cross-site form posts.
+
+    Breadcrumb is a local, no-auth app. These checks do not add a login; they
+    stop a malicious web page (or a rebinding DNS name) from driving the API
+    through the user's browser. JSON/curl clients still work because the CSRF
+    token requirement applies only to browser form content types.
+
+    This is a pure ASGI middleware, not ``BaseHTTPMiddleware``: form bodies
+    must be buffered and replayed so the route's ``Form(...)`` parameters can
+    still parse them after the token check.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope, receive)
+        token = request.cookies.get(CSRF_COOKIE) or secrets.token_urlsafe(32)
+        scope.setdefault("state", {})["csrf_token"] = token
+        set_cookie = CSRF_COOKIE not in request.cookies
+
+        async def send_wrapper(message):
+            if set_cookie and message["type"] == "http.response.start":
+                message.setdefault("headers", []).append(
+                    (
+                        b"set-cookie",
+                        f"{CSRF_COOKIE}={token}; Path=/; HttpOnly; SameSite=lax".encode(
+                            "latin-1"
+                        ),
+                    )
+                )
+            await send(message)
+
+        if not _host_allowed(request.headers.get("host", "")):
+            await _boundary_response("Invalid Host header", 400)(
+                scope, receive, send_wrapper
+            )
+            return
+        downstream_receive = receive
+        if request.method not in SAFE_METHODS:
+            origin = request.headers.get("origin", "")
+            if origin:
+                parsed = urlparse(origin)
+                if parsed.scheme not in ("http", "https") or not _host_allowed(
+                    parsed.netloc
+                ):
+                    await _boundary_response("Cross-origin request rejected")(
+                        scope, receive, send_wrapper
+                    )
+                    return
+            fetch_site = request.headers.get("sec-fetch-site", "")
+            if fetch_site and fetch_site not in ("same-origin", "none"):
+                await _boundary_response("Cross-site request rejected")(
+                    scope, receive, send_wrapper
+                )
+                return
+            content_type = request.headers.get("content-type", "").lower()
+            if content_type.startswith(FORM_CONTENT_TYPES):
+                supplied = request.headers.get("x-csrf-token", "")
+                if not supplied:
+                    body, complete = await _read_body(receive)
+                    if not complete:
+                        await _boundary_response("Incomplete request body", 400)(
+                            scope, receive, send_wrapper
+                        )
+                        return
+                    downstream_receive = _replay_receive(body)
+                    try:
+                        form = await Request(scope, _replay_receive(body)).form()
+                    except Exception:  # noqa: BLE001
+                        await _boundary_response("Malformed form body", 400)(
+                            scope, receive, send_wrapper
+                        )
+                        return
+                    supplied = str(form.get("csrf_token") or "")
+                if not supplied or not hmac.compare_digest(supplied, token):
+                    await _boundary_response("CSRF token missing or invalid")(
+                        scope, receive, send_wrapper
+                    )
+                    return
+        await self.app(scope, downstream_receive, send_wrapper)
+
+
+app.add_middleware(LocalBoundaryMiddleware)
+
 
 TYPE_CHOICES = reporting.TYPE_ORDER
 
@@ -200,6 +425,7 @@ def program_view(program_id: int, request: Request, session: Session = Depends(g
         "unknown": sum(1 for e in entities if e.scope_status == "unknown"),
     }
     unattributed = [e for e in entities if e.target_id is None]
+    triage_states = {finding.id: triage.triage_status(finding) for finding in findings}
     return templates.TemplateResponse(
         request,
         "program.html",
@@ -211,6 +437,7 @@ def program_view(program_id: int, request: Request, session: Session = Depends(g
             entity_total=len(entities),
             relationships=relationships,
             findings=findings,
+            triage_states=triage_states,
             scope_counts=scope_counts,
             unattributed=unattributed,
         ),
@@ -235,6 +462,8 @@ def rebuild_everything(session: Session = Depends(get_session)):
 def program_graph(
     program_id: int,
     request: Request,
+    q: str = "",
+    node_type: str = "",
     session: Session = Depends(get_session),
 ):
     program = session.get(Program, program_id)
@@ -243,13 +472,38 @@ def program_graph(
     targets = session.exec(
         select(Target).where(Target.program_id == program_id).order_by(Target.name)
     ).all()
-    entities = session.exec(
+    all_entities = session.exec(
         select(Entity).where(Entity.program_id == program_id).order_by(Entity.type, Entity.value)
     ).all()
-    relationships = session.exec(
+    all_relationships = session.exec(
         select(Relationship).where(Relationship.program_id == program_id)
     ).all()
+
+    query = (q or "").strip().lower()
+    node_type = (node_type or "").strip()
+    entities = [
+        entity for entity in all_entities
+        if (not query or query in (entity.value or "").lower())
+        and (not node_type or entity.type == node_type)
+    ]
+    visible_ids = {entity.id for entity in entities if entity.id is not None}
+    visible_pairs = {(entity.type, (entity.value or "").lower()) for entity in entities}
+
+    def _edge_visible(relationship) -> bool:
+        if relationship.src_entity_id is not None and relationship.dst_entity_id is not None:
+            return (
+                relationship.src_entity_id in visible_ids
+                and relationship.dst_entity_id in visible_ids
+            )
+        return (
+            (relationship.src_type, (relationship.src_value or "").lower()) in visible_pairs
+            and (relationship.dst_type, (relationship.dst_value or "").lower()) in visible_pairs
+        )
+
+    relationships = [r for r in all_relationships if _edge_visible(r)]
     entity_by_id = {e.id: e for e in entities}
+    path_tree = graph.path_tree(entities)
+    filter_active = bool(query or node_type)
 
     by_target: dict = {}
     for entity in entities:
@@ -310,8 +564,99 @@ def program_graph(
             edge_count=len(relationships),
             entity_by_id=entity_by_id,
             clusters=clusters,
+            q=q,
+            node_type=node_type,
+            node_types=graph.NODE_TYPES,
+            path_tree=path_tree,
+            visible_entities=len(entities),
+            total_entities=len(all_entities),
+            filter_active=filter_active,
         ),
     )
+
+
+@app.get("/targets/{target_id}/history", response_class=HTMLResponse)
+def target_history_view(
+    target_id: int,
+    request: Request,
+    from_scan: int = 0,
+    to_scan: int = 0,
+    session: Session = Depends(get_session),
+):
+    target = session.get(Target, target_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Target not found")
+    try:
+        data = history.target_history(session, target_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    program = session.get(Program, target.program_id) if target.program_id else None
+    selected_diff = None
+    if from_scan and to_scan:
+        try:
+            selected_diff = history.load_diff(session, target_id, from_scan, to_scan)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    elif data.get("latest_diff"):
+        selected_diff = data["latest_diff"]
+    return templates.TemplateResponse(
+        request,
+        "history.html",
+        _ctx(
+            target=target,
+            program=program,
+            history=data,
+            selected_diff=selected_diff,
+            from_scan=from_scan,
+            to_scan=to_scan,
+        ),
+    )
+
+
+@app.post("/targets/{target_id}/history/rebuild")
+def rebuild_target_history(
+    target_id: int, session: Session = Depends(get_session)
+):
+    target = session.get(Target, target_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Target not found")
+    report = history.rebuild_snapshots(session, target_id=target_id)
+    message = (
+        f"rebuilt {report['built']} snapshot(s), "
+        f"{report['failed']} failed, {report['skipped']} skipped"
+    )
+    return RedirectResponse(
+        f"/targets/{target_id}/history?msg=" + quote(message), status_code=303
+    )
+
+
+@app.post("/programs/{program_id}/snapshots/rebuild")
+def rebuild_program_snapshots(
+    program_id: int, session: Session = Depends(get_session)
+):
+    if session.get(Program, program_id) is None:
+        raise HTTPException(status_code=404, detail="Program not found")
+    report = history.rebuild_snapshots(session, program_id=program_id)
+    message = (
+        f"rebuilt {report['built']} snapshot(s), "
+        f"{report['failed']} failed, {report['skipped']} skipped"
+    )
+    return RedirectResponse(
+        f"/programs/{program_id}?msg=" + quote(message), status_code=303
+    )
+
+
+@app.post("/jobs/{job_id}/snapshot/rebuild")
+def rebuild_job_snapshot(job_id: int, session: Session = Depends(get_session)):
+    job = session.get(ScanJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    try:
+        history.generate_snapshot(session, job)
+    except Exception as exc:  # noqa: BLE001
+        history.upsert_snapshot(session, job, status="pending", error=str(exc))
+        raise HTTPException(status_code=500, detail=f"snapshot rebuild failed: {exc}") from exc
+    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
 
 
 @app.post("/programs/{program_id}/targets")
@@ -362,6 +707,7 @@ def delete_program(program_id: int, session: Session = Depends(get_session)):
             session.delete(row)
     session.delete(program)
     session.commit()
+    _reconcile_chain(session)
     return RedirectResponse("/", status_code=303)
 
 
@@ -461,193 +807,40 @@ def _ensure_targets_from_scope(session: Session, program: Program) -> int:
     return created
 
 
-def _persist_findings(
-    session: Session, pid: int | None, tid: int | None, findings: list[dict], paste_id: int
-) -> int:
-    """Create Finding rows from parser/takeover output, de-duplicated.
-
-    Re-importing the same tool output must never spray duplicate findings;
-    an existing finding keeps its status/notes but refreshes its timestamp.
-    """
-    if pid is None or not findings:
-        return 0
-    targets = session.exec(select(Target).where(Target.program_id == pid)).all()
-    tmap = {t.name.strip().lower(): t.id for t in targets}
-
-    def _resolve(host: str) -> int | None:
-        if not host:
-            return None
-        host = host.strip().lower().rstrip(".")
-        if host in tmap:
-            return tmap[host]
-        for name, ident in tmap.items():
-            if host == name or host.endswith("." + name):
-                return ident
-        return None
-
-    created = 0
-    now = datetime.now(timezone.utc)
-    for item in findings:
-        title = str(item.get("title") or "").strip()
-        if not title:
-            continue
-        fingerprint = str(item.get("dedup_key") or f"{title}|{item.get('evidence', '')}")
-        existing = session.exec(
-            select(Finding).where(Finding.program_id == pid, Finding.fingerprint == fingerprint)
-        ).first()
-        if existing is not None:
-            existing.updated_at = now
-            session.add(existing)
-            continue
-        cvss = item.get("cvss")
-        target_id = tid if tid is not None else _resolve(str(item.get("target") or ""))
-        tags = item.get("tags") or []
-        if isinstance(tags, str):
-            tags = [t.strip() for t in tags.split(",") if t.strip()]
-        session.add(
-            Finding(
-                program_id=pid,
-                target_id=target_id,
-                paste_id=paste_id,
-                title=title,
-                severity=str(item.get("severity") or "info").lower(),
-                cvss=str(cvss) if cvss not in (None, "") else None,
-                description=item.get("description") or None,
-                evidence=item.get("evidence") or None,
-                tags=list(tags),
-                source_tool=item.get("parser"),
-                fingerprint=fingerprint,
-                updated_at=now,
-            )
-        )
-        created += 1
-    session.commit()
-    return created
+# The ingest path lives in app/ingest.py so the web app, CLI, JSON API and
+# native worker all share exactly one evidence/parsing implementation.
+_reconcile_chain = ingest_mod._reconcile_chain
 
 
-def _seal_paste(session: Session, raw: str) -> tuple[str, str, int | None]:
-    """Compute (content_sha256, chain_hash, prev_paste_id) for a new capture.
-
-    The chain links each capture to the previous one, so the notebook is a
-    tamper-evident log: alter any past capture and its hash breaks. A capture's
-    predecessor is recorded explicitly, so deleting a program (and its captures)
-    shows up as a chain *gap*, not as tampering.
-    """
-    content = hashlib.sha256((raw or "").encode("utf-8", errors="replace")).hexdigest()
-    prev = session.exec(
-        select(Paste).where(Paste.chain_hash != None).order_by(Paste.id.desc()).limit(1)  # noqa: E711
-    ).first()
-    prev_id = prev.id if prev else None
-    prev_chain = (prev.chain_hash if prev and prev.chain_hash else "genesis")
-    chain = hashlib.sha256(f"{prev_chain}:{content}".encode("utf-8")).hexdigest()
-    return content, chain, prev_id
-
-
-def _annotate_cross_program(session: Session, pid: int | None, paste_id: int) -> int:
-    """Tag this capture's entities that were seen in OTHER programs.
-
-    This is Breadcrumb's memory: a subdomain, port, secret or finding you met
-    months ago on another engagement is flagged as already-known, with links
-    back. Offline, across every program in the notebook.
-    """
-    if pid is None:
-        return 0
-    ents = session.exec(select(Entity).where(Entity.paste_id == paste_id)).all()
-    if not ents:
-        return 0
-    norms = sorted({(e.normalized or "").lower() for e in ents if e.normalized})
-    if not norms:
-        return 0
-    names = {p.id: p.name for p in session.exec(select(Program)).all()}
-    found: dict[tuple[str, str], dict[int, str]] = {}
-    for i in range(0, len(norms), 400):
-        chunk = norms[i:i + 400]
-        rows = session.exec(
-            select(Entity).where(
-                Entity.program_id != None,  # noqa: E711
-                Entity.program_id != pid,
-                func.lower(Entity.normalized).in_(chunk),
-            )
-        ).all()
-        for r in rows:
-            found.setdefault((r.type, (r.normalized or "").lower()), {})[r.program_id] = names.get(
-                r.program_id, f"#{r.program_id}"
-            )
-    if not found:
-        return 0
-    touched = 0
-    for e in ents:
-        key = (e.type, (e.normalized or "").lower())
-        progs = found.get(key)
-        if progs:
-            e.cross_programs = [{"id": k, "name": v} for k, v in sorted(progs.items())]
-            session.add(e)
-            touched += 1
-    if touched:
-        session.commit()
-    return touched
-
-
-def _ingest(session: Session, text: str, pid: int | None, tid: int | None, source: str) -> Paste:
-    """Shared ingest path: form pastes, file uploads, and the JSON API."""
-    entities, relationships, parsers, errors = analyze(text)
-    if len(entities) > MAX_ENTITIES_PER_PASTE:
-        errors = errors + [{
-            "parser": "*",
-            "error": f"truncated at {MAX_ENTITIES_PER_PASTE} entities ({len(entities)} found)",
-        }]
-        entities = entities[:MAX_ENTITIES_PER_PASTE]
-    content_sha, chain_hash, prev_paste_id = _seal_paste(session, text)
-    paste = Paste(
-        program_id=pid,
-        target_id=tid,
-        source=source,
-        raw=text,
-        parsers=parsers,
-        parse_errors=errors,
-        tool_guess=parsers[0] if parsers else None,
-        content_sha256=content_sha,
-        chain_hash=chain_hash,
-        prev_paste_id=prev_paste_id,
+def _ingest(
+    session: Session,
+    text: str,
+    pid: int | None,
+    tid: int | None,
+    source: str,
+    capture_key: str | None = None,
+    *,
+    job_id: int | None = None,
+    attempt_id: int | None = None,
+    phase: str | None = None,
+) -> Paste:
+    """Backward-compatible wrapper used by the existing routes and CLI."""
+    result = ingest_mod.ingest(
+        session,
+        ingest_mod.IngestRequest(
+            text=text,
+            program_id=pid,
+            target_id=tid,
+            source=source,
+            capture_key=capture_key,
+            job_id=job_id,
+            attempt_id=attempt_id,
+            phase=phase,
+            # Kept as a module-level constant so tests can monkeypatch it.
+            max_entities=MAX_ENTITIES_PER_PASTE,
+        ),
     )
-    session.add(paste)
-    session.commit()
-    session.refresh(paste)
-    for entity in entities:
-        session.add(
-            Entity(
-                paste_id=paste.id,
-                program_id=pid,
-                target_id=tid,
-                type=entity.type,
-                value=entity.value,
-                normalized=entity.normalized,
-                confidence=entity.confidence,
-                parser=entity.parser,
-                meta=entity.meta,
-                provenance=[paste.id],
-            )
-        )
-    for rel in relationships:
-        session.add(
-            Relationship(
-                paste_id=paste.id,
-                program_id=pid,
-                src_value=rel.src_value,
-                src_type=rel.src_type,
-                dst_value=rel.dst_value,
-                dst_type=rel.dst_type,
-                rel_type=rel.rel_type,
-                source="parser",
-            )
-        )
-    session.commit()
-    consolidate_entities(session, pid)
-    if pid:
-        rebuild_program(session, pid)
-    _persist_findings(session, pid, tid, extract_findings(text) + detect_takeovers(entities), paste.id)
-    _annotate_cross_program(session, pid, paste.id)
-    return paste
+    return result.paste
 
 
 @app.post("/paste")
@@ -879,14 +1072,25 @@ def ledger_view(request: Request, session: Session = Depends(get_session)):
 def api_verify(session: Session = Depends(get_session)):
     """Recompute the evidence hash-chain and report integrity (offline).
 
-    Checks each capture's content hash against its stored seal, and its chain
-    link against the recorded predecessor. Captures removed with a deleted
-    program are reported as ``gaps`` (not tampering); legacy unsealed captures
-    are reported as ``unsealed``.
+    Checks each capture's content hash against its stored seal, its chain
+    link against the recorded predecessor, the 1-based sequence, and the
+    singleton head/length row. Captures removed with a deleted program are
+    reported as ``gaps`` (not tampering); legacy unsealed captures are
+    reported as ``unsealed``. A duplicate predecessor is a ``fork``.
     """
     pastes = session.exec(select(Paste).order_by(Paste.id)).all()
     by_id = {p.id: p for p in pastes}
     broken, unsealed, gaps = None, 0, 0
+    sealed = [p for p in pastes if p.content_sha256 and p.chain_hash]
+    sequence_ok = True
+    previous_seq = 0
+    for p in sealed:
+        if p.chain_seq is None or p.chain_seq <= previous_seq:
+            sequence_ok = False
+            break
+        previous_seq = p.chain_seq
+    prev_counts = Counter(p.prev_paste_id for p in sealed if p.prev_paste_id is not None)
+    forks = sum(1 for count in prev_counts.values() if count > 1)
     for p in pastes:
         if not p.content_sha256 or not p.chain_hash:
             unsealed += 1
@@ -908,14 +1112,31 @@ def api_verify(session: Session = Depends(get_session)):
         if expected != p.chain_hash:
             broken = p.id
             break
+    chain = session.get(EvidenceChain, 1)
+    last = max(sealed, key=lambda p: (p.chain_seq or 0, p.id or 0)) if sealed else None
+    head_ok = chain is not None and chain.head_paste_id == (last.id if last else None)
+    length_ok = chain is not None and chain.length == len(sealed)
+    valid = (
+        broken is None
+        and forks == 0
+        and sequence_ok
+        and head_ok
+        and length_ok
+    )
     return JSONResponse(
         {
-            "valid": broken is None,
+            "valid": valid,
             "captures": len(pastes),
             "sealed": len(pastes) - unsealed,
             "unsealed": unsealed,
             "gaps": gaps,
             "broken_at": broken,
+            "forks": forks,
+            "sequence_ok": sequence_ok,
+            "chain_head": chain.head_paste_id if chain is not None else None,
+            "chain_length": chain.length if chain is not None else 0,
+            "head_ok": head_ok,
+            "length_ok": length_ok,
         }
     )
 
@@ -966,6 +1187,11 @@ def runners_view(request: Request, session: Session = Depends(get_session)):
             programs=_programs(session),
             profiles=profiles,
             profile_names={p.id: p.name for p in profiles},
+            native_ids=set(collector_ids()) | set(adapter_ids()),
+            executor_mode=os.environ.get("BREADCRUMB_EXECUTOR", "off").strip().lower(),
+            adapters_enabled=adapters_enabled(),
+            strict_mode=strict_mode(),
+            maintenance=get_app_state(session),
         ),
     )
 
@@ -976,6 +1202,8 @@ def create_job(
     target: str = Form(""),
     program_id: str = Form(""),
     header_profile_id: str = Form(""),
+    params: str = Form(""),
+    run_now: str = Form(""),
     session: Session = Depends(get_session),
 ):
     if runners.find_runner(session, runner) is None:
@@ -984,15 +1212,39 @@ def create_job(
     hpid = int(header_profile_id) if header_profile_id.strip() else None
     if hpid is not None and session.get(HeaderProfile, hpid) is None:
         raise HTTPException(status_code=400, detail="Unknown header profile")
+    options: dict = {}
+    if params.strip():
+        try:
+            parsed = json.loads(params)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"params must be JSON: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise HTTPException(status_code=400, detail="params must be a JSON object")
+        options = parsed
+    target_value = target.strip()
+    target_id = None
+    if pid is not None and target_value:
+        targets = session.exec(select(Target).where(Target.program_id == pid)).all()
+        matched = history.attribute_target(history._host_for(target_value), targets)
+        target_id = matched.id if matched else None
     job = ScanJob(
         program_id=pid,
+        target_id=target_id,
         runner=runner,
-        target=target.strip(),
+        target=target_value,
         status="queued",
         header_profile_id=hpid,
+        params=options,
     )
     session.add(job)
     session.commit()
+    session.refresh(job)
+    selected = runners.find_runner(session, runner)
+    if run_now and selected is not None and (selected.native or selected.adapter):
+        state = _arm_native_job(session, job)
+        if state == "queued":
+            _start_native_job(job.id, job.runner)
+        return RedirectResponse(f"/jobs/{job.id}", status_code=303)
     return RedirectResponse("/runners", status_code=303)
 
 
@@ -1005,23 +1257,55 @@ def job_view(job_id: int, request: Request, session: Session = Depends(get_sessi
     program = session.get(Program, job.program_id) if job.program_id else None
     runner = runners.find_runner(session, job.runner)
     curl = headers_gen.to_curl_args(profile.headers or {}, profile.proxy or "") if profile else ""
+    attempts = session.exec(
+        select(JobAttempt).where(JobAttempt.job_id == job_id).order_by(JobAttempt.attempt_no)
+    ).all()
+    phases = session.exec(
+        select(ScanPhase).where(ScanPhase.job_id == job_id).order_by(ScanPhase.seq)
+    ).all()
+    events = session.exec(
+        select(JobEvent).where(JobEvent.job_id == job_id).order_by(JobEvent.id)
+    ).all()
+    snapshot = history.snapshot_for_job(session, job_id)
+    if snapshot is None and job.status == "done":
+        snapshot = history.ensure_snapshot(session, job)
+    target = session.get(Target, job.target_id) if job.target_id else None
     return templates.TemplateResponse(
         request,
         "job.html",
-        _ctx(job=job, profile=profile, program=program, runner=runner, curl=curl),
+        _ctx(
+            job=job,
+            profile=profile,
+            program=program,
+            target=target,
+            runner=runner,
+            curl=curl,
+            attempts=attempts,
+            phases=phases,
+            events=events,
+            snapshot=snapshot,
+            native=bool(runner and (runner.native or runner.adapter)),
+            adapter=bool(runner and runner.adapter),
+        ),
     )
 
 
 @app.post("/jobs/{job_id}/cancel")
 def cancel_job(job_id: int, session: Session = Depends(get_session)):
-    """Flip a job to cancelled; executors should stop on their next poll."""
-    job = session.get(ScanJob, job_id)
-    if job is not None and job.status in ("queued", "running"):
-        job.status = "cancelled"
-        job.finished_at = datetime.now(timezone.utc)
-        session.add(job)
-        session.commit()
-    return RedirectResponse("/runners?msg=" + quote(f"job #{job_id} cancelled"), status_code=303)
+    """Cancel a queued job or ask a running worker to stop at its next check."""
+    outcome = jobs_queue.request_cancel(session, job_id)
+    if outcome is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    message = {
+        "cancelled": f"job #{job_id} cancelled",
+        "cancel-requested": f"cancellation requested for job #{job_id}",
+    }.get(outcome, f"job #{job_id} is already {outcome}")
+    return RedirectResponse("/runners?msg=" + quote(message), status_code=303)
+
+
+def _is_imported_job(job: ScanJob) -> bool:
+    """True for historical rows created by ``breadcrumb import-leadline``."""
+    return bool((job.params or {}).get("imported"))
 
 
 @app.post("/jobs/{job_id}/retry")
@@ -1029,16 +1313,118 @@ def retry_job(job_id: int, session: Session = Depends(get_session)):
     job = session.get(ScanJob, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
+    if _is_imported_job(job):
+        return RedirectResponse(
+            f"/jobs/{job_id}?msg="
+            + quote(
+                "Imported Leadline jobs are historical and cannot be retried; "
+                "queue a new scan instead."
+            ),
+            status_code=303,
+        )
     clone = ScanJob(
         program_id=job.program_id,
         runner=job.runner,
         target=job.target,
         status="queued",
         header_profile_id=job.header_profile_id,
+        params=dict(job.params or {}),
+        priority=int(job.priority or 0),
+        max_attempts=int(job.max_attempts or 3),
     )
     session.add(clone)
     session.commit()
     return RedirectResponse("/runners", status_code=303)
+
+
+def _arm_native_job(session: Session, job: ScanJob) -> str:
+    """Validate a native job and make it claimable.
+
+    Returns ``armed``/``queued`` when the job can run, otherwise the stored
+    status. A manual re-run intentionally resets the same row (including the
+    attempt count) so a job that exhausted its retries can run again.
+    """
+    if _is_imported_job(job):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Imported Leadline jobs are historical; queue a new scan "
+                "instead of re-running this row."
+            ),
+        )
+    runner = runners.find_runner(session, job.runner)
+    runnable = set(collector_ids()) | set(adapter_ids())
+    if runner is None or not (runner.native or runner.adapter) or job.runner not in runnable:
+        raise HTTPException(
+            status_code=400, detail="This runner has no native collector or adapter"
+        )
+    if job.status in ("failed", "cancelled"):
+        job.status = "queued"
+        job.next_run_at = None
+        job.error = None
+        job.output_paste_id = None
+        job.finished_at = None
+        job.cancel_requested = False
+        if int(job.attempts or 0) >= int(job.max_attempts or 3):
+            # Keep attempt numbers unique and preserve the audit trail; allow
+            # exactly one more attempt instead of reusing attempt 1's captures.
+            job.max_attempts = int(job.attempts or 0) + 1
+        session.add(job)
+        session.commit()
+        return "armed"
+    if job.status != "queued":
+        return job.status
+    if job.next_run_at is not None or int(job.attempts or 0) >= int(job.max_attempts or 3):
+        # "Run now" must bypass retry backoff.
+        job.next_run_at = None
+        if int(job.attempts or 0) >= int(job.max_attempts or 3):
+            job.max_attempts = int(job.attempts or 0) + 1
+        session.add(job)
+        session.commit()
+    return "queued"
+
+
+def _start_native_job(job_id: int, runner_id: str) -> None:
+    """Execute one claimed-by-id job in a background thread."""
+
+    def _run() -> None:
+        try:
+            run_native_job(
+                job_id=job_id,
+                runner_ids=(runner_id,),
+                worker_id=f"web:{os.getpid()}",
+            )
+        except Exception as exc:  # noqa: BLE001  (never kill the web process)
+            print(f"breadcrumb run-now error for job #{job_id}: {exc}", file=sys.stderr)
+
+    threading.Thread(target=_run, name=f"breadcrumb-run-{job_id}", daemon=True).start()
+
+
+@app.post("/jobs/{job_id}/run")
+def run_job(
+    job_id: int,
+    session: Session = Depends(get_session),
+):
+    """Run a native collector now, in a background thread.
+
+    The regular ``breadcrumb worker`` is the durable path; this button is a
+    convenience for a single local job. The atomic claim in ``run_once`` means
+    the background thread and a standalone worker cannot run it twice.
+    """
+    job = session.get(ScanJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    state = _arm_native_job(session, job)
+    if state in ("running", "done"):
+        return RedirectResponse(
+            "/jobs/" + str(job_id) + "?msg=" + quote(f"job #{job_id} is {state}"),
+            status_code=303,
+        )
+    _start_native_job(job.id, job.runner)
+    return RedirectResponse(
+        "/jobs/" + str(job_id) + "?msg=" + quote(f"job #{job_id} started"),
+        status_code=303,
+    )
 
 
 @app.post("/jobs/{job_id}/delete")
@@ -1106,7 +1492,7 @@ def create_custom_runner(
             status_code=400,
             detail="Runner id must be 2-41 chars: lowercase letters, digits, dashes.",
         )
-    if runners.get_runner(rid) is not None or session.exec(
+    if runners.get_runner(rid) is not None or rid in collector_ids() or session.exec(
         select(CustomRunner).where(CustomRunner.runner_id == rid)
     ).first():
         raise HTTPException(status_code=400, detail="Runner id already exists")
@@ -1387,7 +1773,12 @@ def entity_explorer(
 
 @app.get("/reports/{program_id}/md", response_class=PlainTextResponse)
 def report_md(program_id: int, request: Request, session: Session = Depends(get_session)):
-    text = reporting.to_markdown(session, program_id, mask=not _reveal(request))
+    text = reporting.to_markdown(
+        session,
+        program_id,
+        mask=not _reveal(request),
+        include_triaged=_include_triaged(request),
+    )
     if not text:
         raise HTTPException(status_code=404, detail="Program not found")
     return PlainTextResponse(
@@ -1398,7 +1789,12 @@ def report_md(program_id: int, request: Request, session: Session = Depends(get_
 
 @app.get("/reports/{program_id}/json")
 def report_json(program_id: int, request: Request, session: Session = Depends(get_session)):
-    data = reporting.to_dict(session, program_id, mask=not _reveal(request))
+    data = reporting.to_dict(
+        session,
+        program_id,
+        mask=not _reveal(request),
+        include_triaged=_include_triaged(request),
+    )
     if not data:
         raise HTTPException(status_code=404, detail="Program not found")
     return JSONResponse(
@@ -1413,7 +1809,9 @@ def report_html(program_id: int, request: Request, session: Session = Depends(ge
     if program is None:
         raise HTTPException(status_code=404, detail="Program not found")
     reveal = request.query_params.get("reveal") == "1"
+    include_triaged = _include_triaged(request)
     _, targets, entities, relationships, findings = reporting.collect(session, program_id)
+    findings = reporting.filter_findings(findings, include_triaged)
     if not reveal:
         masked = []
         for e in entities:
@@ -1421,6 +1819,24 @@ def report_html(program_id: int, request: Request, session: Session = Depends(ge
             c.value = reporting.mask_value(e.type, e.value)
             masked.append(c)
         entities = masked
+    summary = {
+        "total_findings": len(findings),
+        "severity_counts": reporting.severity_counts(findings),
+        "verified_cves": sum(
+            1 for finding in findings
+            if reporting.finding_is_verified(finding) and "cve" in (finding.tags or [])
+        ),
+        "unverified_cves": 0,
+        "endpoints": sum(1 for e in entities if e.type in {"endpoint", "url", "path"}),
+        "subdomains": sum(1 for e in entities if e.type == "subdomain"),
+        "open_ports": sum(1 for e in entities if e.type == "port"),
+        "technologies": sum(1 for e in entities if e.type == "tech"),
+        "missing_headers": sum(
+            1 for finding in findings if "security-header" in (finding.tags or [])
+        ),
+        "risk_score": history.compute_risk(findings)[0],
+        "risk_level": history.compute_risk(findings)[1],
+    }
     return templates.TemplateResponse(
         request,
         "report.html",
@@ -1430,6 +1846,9 @@ def report_html(program_id: int, request: Request, session: Session = Depends(ge
             groups=reporting.group_entities(entities),
             relationships=relationships,
             findings=findings,
+            summary=summary,
+            highlights=reporting.highlights(findings),
+            include_triaged=include_triaged,
             masked=not reveal,
         ),
     )
@@ -1437,6 +1856,143 @@ def report_html(program_id: int, request: Request, session: Session = Depends(ge
 
 def _reveal(request: Request) -> bool:
     return request.query_params.get("reveal") == "1"
+
+
+def _include_triaged(request: Request) -> bool:
+    return request.query_params.get("include_triaged") == "1"
+
+
+def _program_pdf_payload(
+    session: Session, program_id: int, include_triaged: bool
+) -> tuple[Program, dict, dict, list[dict]] | None:
+    program = session.get(Program, program_id)
+    if program is None:
+        return None
+    _, targets, entities, _, findings = reporting.collect(session, program_id)
+    findings = reporting.filter_findings(findings, include_triaged)
+    risk_score, risk_level = history.compute_risk(findings)
+    summary = {
+        "total_findings": len(findings),
+        "severity_counts": reporting.severity_counts(findings),
+        "verified_cves": sum(1 for finding in findings if reporting.finding_is_verified(finding)),
+        "unverified_cves": 0,
+        "endpoints": sum(1 for e in entities if e.type in {"endpoint", "url", "path"}),
+        "subdomains": sum(1 for e in entities if e.type == "subdomain"),
+        "open_ports": sum(1 for e in entities if e.type == "port"),
+        "technologies": sum(1 for e in entities if e.type == "tech"),
+        "missing_headers": sum(
+            1 for finding in findings if "security-header" in (finding.tags or [])
+        ),
+        "risk_score": risk_score,
+        "risk_level": risk_level,
+    }
+    highlights = {
+        "technologies": sorted({e.value for e in entities if e.type == "tech"})[:100],
+        "cdn_waf": [],
+        "security_headers_present": [],
+        "security_headers_missing": [],
+        "resolved_ips": sorted({e.value for e in entities if e.type == "ip"})[:100],
+        "hostnames": sorted(
+            {e.value for e in entities if e.type in {"domain", "subdomain"}}
+        )[:100],
+        "subdomains": sorted({e.value for e in entities if e.type == "subdomain"})[:200],
+        "open_ports": {
+            f"{e.meta.get('port') or e.value}/tcp": {
+                "service": e.meta.get("service"),
+                "version": e.meta.get("version"),
+            }
+            for e in entities
+            if e.type == "port"
+        },
+        "discovered_endpoints": sorted(
+            {e.value for e in entities if e.type in {"endpoint", "url", "path"}}
+        )[:100],
+    }
+    payload = [history.serialize_finding(finding) for finding in findings]
+    return program, summary, highlights, payload
+
+
+@app.get("/reports/{program_id}/pdf")
+def report_pdf(program_id: int, request: Request, session: Session = Depends(get_session)):
+    built = _program_pdf_payload(session, program_id, _include_triaged(request))
+    if built is None:
+        raise HTTPException(status_code=404, detail="Program not found")
+    program, summary, highlights, findings = built
+    content = pdf_export.generate_report_pdf(
+        program_name=program.name,
+        target_name=program.name,
+        target_url="",
+        summary=summary,
+        highlights=highlights,
+        findings=findings,
+    )
+    filename = pdf_export.report_filename(program.name, None, "pdf")
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/jobs/{job_id}/report.pdf")
+def job_report_pdf(job_id: int, request: Request, session: Session = Depends(get_session)):
+    job = session.get(ScanJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    snapshot = history.ensure_snapshot(session, job)
+    if snapshot is None or snapshot.status != "ready":
+        raise HTTPException(status_code=409, detail="Snapshot is not ready for this job")
+    data = snapshot.data or {}
+    include_triaged = _include_triaged(request)
+    findings = [
+        item
+        for item in (data.get("findings") or {}).values()
+        if include_triaged or not item.get("is_false_positive")
+    ]
+    summary = {
+        "total_findings": len(findings),
+        "severity_counts": data.get("severity_counts") or {},
+        "verified_cves": data.get("verified_cves") or 0,
+        "unverified_cves": data.get("unverified_cves") or 0,
+        "endpoints": len(data.get("endpoints") or []),
+        "subdomains": len(data.get("subdomains") or []),
+        "open_ports": len(data.get("ports") or {}),
+        "technologies": len(data.get("technologies") or []),
+        "missing_headers": len(data.get("security_headers_missing") or []),
+        "risk_score": data.get("risk_score") or 0,
+        "risk_level": data.get("risk_level") or "minimal",
+    }
+    highlights = {
+        "technologies": data.get("technologies") or [],
+        "cdn_waf": data.get("cdn_waf") or [],
+        "security_headers_present": data.get("security_headers_present") or [],
+        "security_headers_missing": data.get("security_headers_missing") or [],
+        "resolved_ips": data.get("resolved_ips") or [],
+        "hostnames": data.get("hostnames") or [],
+        "subdomains": data.get("subdomains") or [],
+        "open_ports": data.get("ports") or {},
+        "discovered_endpoints": data.get("endpoints") or [],
+    }
+    program = session.get(Program, job.program_id) if job.program_id else None
+    content = pdf_export.generate_report_pdf(
+        program_name=program.name if program else "Breadcrumb",
+        target_name=data.get("target_name") or job.target,
+        target_url=data.get("target_url") or job.target,
+        scan_id=job.id,
+        status=job.status,
+        created_at=job.created_at,
+        completed_at=job.finished_at,
+        summary=summary,
+        highlights=highlights,
+        phases=data.get("phases") or [],
+        findings=findings,
+    )
+    filename = pdf_export.report_filename(job.target, job.id, "pdf")
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/reports/{program_id}/csv", response_class=PlainTextResponse)
@@ -1463,8 +2019,12 @@ def report_targets(program_id: int, session: Session = Depends(get_session)):
 
 
 @app.get("/reports/{program_id}/h1", response_class=PlainTextResponse)
-def report_hackerone(program_id: int, session: Session = Depends(get_session)):
-    text = reporting.to_hackerone(session, program_id)
+def report_hackerone(
+    program_id: int, request: Request, session: Session = Depends(get_session)
+):
+    text = reporting.to_hackerone(
+        session, program_id, include_triaged=_include_triaged(request)
+    )
     if not text:
         raise HTTPException(status_code=404, detail="Program not found")
     return PlainTextResponse(
@@ -1476,7 +2036,12 @@ def report_hackerone(program_id: int, session: Session = Depends(get_session)):
 @app.get("/reports/{program_id}/sarif")
 def report_sarif(program_id: int, request: Request, session: Session = Depends(get_session)):
     """SARIF 2.1.0 for CI/SAST dashboards (e.g. GitHub code scanning upload)."""
-    data = reporting.to_sarif(session, program_id, mask=not _reveal(request))
+    data = reporting.to_sarif(
+        session,
+        program_id,
+        mask=not _reveal(request),
+        include_triaged=_include_triaged(request),
+    )
     if not data:
         raise HTTPException(status_code=404, detail="Program not found")
     return JSONResponse(
@@ -1611,15 +2176,76 @@ async def test_notify_settings(request: Request):
 
 
 @app.get("/api/llm/models")
-def api_llm_models(provider_id: str = ""):
+def api_llm_models(provider_id: str = "", detailed: int = 0):
     config = llm.load_config()
     provider = llm.get_provider(config, provider_id or None)
     if provider is None:
         return JSONResponse({"ok": False, "error": "no provider"}, status_code=404)
+    if detailed:
+        return JSONResponse(llm.list_models_detailed(provider))
     try:
         return {"ok": True, "provider": provider.get("id"), "models": llm.list_models(provider)}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
+
+
+def _api_csrf(request: Request) -> None:
+    """JSON endpoints do not pass through the form CSRF check, so check here."""
+    supplied = request.headers.get("x-csrf-token", "")
+    token = getattr(request.state, "csrf_token", "")
+    if not token or not supplied or not hmac.compare_digest(supplied, token):
+        raise HTTPException(status_code=403, detail="CSRF token missing or invalid")
+
+
+@app.post("/api/llm/test")
+def api_llm_test(request: Request, payload: dict = Body(...)):
+    _api_csrf(request)
+    config = llm.load_config()
+    provider = llm.get_provider(config, (payload.get("provider") or "").strip() or None)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="provider not found")
+    model = (payload.get("model") or "").strip()
+    if not model:
+        raise HTTPException(status_code=400, detail="model required")
+    try:
+        max_tokens = int(payload.get("max_tokens") or 64)
+    except (TypeError, ValueError):
+        max_tokens = 64
+    try:
+        timeout = float(payload.get("timeout") or 180)
+    except (TypeError, ValueError):
+        timeout = 180.0
+    timeout = min(600.0, max(30.0, timeout))
+    result = llm.test_model(
+        provider,
+        model,
+        max_tokens=min(512, max(8, max_tokens)),
+        timeout=timeout,
+        auto_fit=bool(payload.get("auto_fit")),
+    )
+    return JSONResponse(result)
+
+
+@app.post("/api/llm/routes")
+def api_llm_routes(request: Request, payload: dict = Body(...)):
+    _api_csrf(request)
+    config = llm.load_config()
+    task = str(payload.get("task") or "").strip()
+    model = str(payload.get("model") or "").strip()
+    if not model:
+        raise HTTPException(status_code=400, detail="model required")
+    if task == "all":
+        tasks = list(llm.TASK_CLASSES)
+    elif task in llm.TASK_CLASSES:
+        tasks = [task]
+    else:
+        raise HTTPException(status_code=400, detail="unknown task route")
+    routing = dict(config.get("routing") or {})
+    for name in tasks:
+        routing[name] = model
+    config["routing"] = routing
+    llm.save_config(config)
+    return {"ok": True, "routing": routing, "tasks": tasks}
 
 
 @app.post("/pastes/{paste_id}/analyze")
@@ -1705,6 +2331,28 @@ def annotate_finding(
 
 
 FINDING_STATUSES = ("open", "in-progress", "resolved", "wont-fix")
+
+
+@app.post("/findings/{finding_id}/triage")
+def set_finding_triage(
+    finding_id: int,
+    triage_status: str = Form(...),
+    triage_note: str = Form(""),
+    session: Session = Depends(get_session),
+):
+    """One primary triage control: Open / Acknowledged / False positive."""
+    finding = session.get(Finding, finding_id)
+    back = "/"
+    if finding is not None:
+        try:
+            triage.apply_triage(finding, triage_status, triage_note)
+        except ValueError:
+            pass
+        else:
+            session.add(finding)
+            session.commit()
+        back = f"/programs/{finding.program_id}?tab=findings"
+    return RedirectResponse(back, status_code=303)
 
 
 @app.post("/findings/{finding_id}/status")
@@ -1929,6 +2577,27 @@ def api_programs(session: Session = Depends(get_session)):
     return {"programs": out}
 
 
+def _job_dict(job: ScanJob) -> dict:
+    return {
+        "id": job.id,
+        "runner": job.runner,
+        "target": job.target,
+        "status": job.status,
+        "program_id": job.program_id,
+        "header_profile_id": job.header_profile_id,
+        "params": dict(job.params or {}),
+        "priority": job.priority,
+        "attempts": job.attempts,
+        "max_attempts": job.max_attempts,
+        "next_run_at": job.next_run_at.isoformat() if job.next_run_at else None,
+        "output_paste_id": job.output_paste_id,
+        "error": job.error,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+    }
+
+
 @app.get("/api/v1/jobs")
 def api_list_jobs(status: str = "", session: Session = Depends(get_session)):
     stmt = select(ScanJob).order_by(ScanJob.id.desc())
@@ -1939,13 +2608,71 @@ def api_list_jobs(status: str = "", session: Session = Depends(get_session)):
         p.id: p.name
         for p in session.exec(select(HeaderProfile)).all()
     }
-    return {"jobs": [
-        {"id": j.id, "runner": j.runner, "target": j.target, "status": j.status,
-         "program_id": j.program_id, "header_profile_id": j.header_profile_id,
-         "header_profile_name": names.get(j.header_profile_id),
-         "created_at": j.created_at.isoformat() if j.created_at else None}
-        for j in jobs
-    ]}
+    out = []
+    for job in jobs:
+        item = _job_dict(job)
+        item["header_profile_name"] = names.get(job.header_profile_id)
+        out.append(item)
+    return {"jobs": out}
+
+
+@app.get("/api/v1/jobs/{job_id}")
+def api_get_job(job_id: int, session: Session = Depends(get_session)):
+    job = session.get(ScanJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    attempts = session.exec(
+        select(JobAttempt).where(JobAttempt.job_id == job_id).order_by(JobAttempt.attempt_no)
+    ).all()
+    phases = session.exec(
+        select(ScanPhase).where(ScanPhase.job_id == job_id).order_by(ScanPhase.seq)
+    ).all()
+    events = session.exec(
+        select(JobEvent).where(JobEvent.job_id == job_id).order_by(JobEvent.id).limit(1000)
+    ).all()
+    data = _job_dict(job)
+    data.update(
+        {
+            "attempts": [
+                {
+                    "id": a.id,
+                    "attempt_no": a.attempt_no,
+                    "worker_id": a.worker_id,
+                    "status": a.status,
+                    "started_at": a.started_at.isoformat() if a.started_at else None,
+                    "finished_at": a.finished_at.isoformat() if a.finished_at else None,
+                    "error": a.error,
+                    "output_paste_id": a.output_paste_id,
+                    "stats": a.stats or {},
+                }
+                for a in attempts
+            ],
+            "phases": [
+                {
+                    "id": p.id,
+                    "seq": p.seq,
+                    "name": p.name,
+                    "status": p.status,
+                    "started_at": p.started_at.isoformat() if p.started_at else None,
+                    "finished_at": p.finished_at.isoformat() if p.finished_at else None,
+                    "output_paste_id": p.output_paste_id,
+                    "stats": p.stats or {},
+                    "error": p.error,
+                }
+                for p in phases
+            ],
+            "events": [
+                {
+                    "id": e.id,
+                    "kind": e.kind,
+                    "message": e.message,
+                    "created_at": e.created_at.isoformat() if e.created_at else None,
+                }
+                for e in events
+            ],
+        }
+    )
+    return data
 
 
 @app.post("/api/v1/jobs", status_code=202)
@@ -1959,21 +2686,99 @@ def api_create_job(payload: dict = Body(...), session: Session = Depends(get_ses
     hpid = payload.get("header_profile_id")
     if hpid is not None and session.get(HeaderProfile, int(hpid)) is None:
         raise HTTPException(status_code=400, detail="Unknown header profile")
+    params = payload.get("params") or {}
+    if not isinstance(params, dict):
+        raise HTTPException(status_code=400, detail="params must be an object")
+    try:
+        priority = int(payload.get("priority", 0) or 0)
+        max_attempts = int(payload.get("max_attempts", 3) or 3)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="priority/max_attempts must be integers")
     job = ScanJob(
         program_id=payload.get("program_id"),
         runner=runner_id,
         target=str(payload.get("target", "") or ""),
         status="queued",
         header_profile_id=int(hpid) if hpid is not None else None,
+        params=dict(params),
+        priority=priority,
+        max_attempts=max(1, max_attempts),
     )
     session.add(job)
     session.commit()
     session.refresh(job)
+    native = runner_id in collector_ids()
+    adapter = runner_id in adapter_ids()
+    if adapter:
+        note = (
+            "External tool adapter: run it explicitly with "
+            f"POST /api/v1/jobs/{job.id}/run, or set BREADCRUMB_EXTERNAL_TOOLS=1 "
+            "for the durable worker to claim adapter jobs. "
+        )
+    elif native:
+        note = (
+            "Native collector: claim it with `breadcrumb worker` or POST "
+            f"/jobs/{job.id}/run. "
+        )
+    else:
+        note = "External runner: POST output to /api/v1/pastes, then update status. "
     return {
         "job_id": job.id,
         "status": "queued",
-        "note": "No executor connected yet — POST output to /api/v1/pastes, then update status.",
+        "native": native or adapter,
+        "adapter": adapter,
+        "note": note + "The executor is off by default.",
     }
+
+
+@app.post("/api/v1/jobs/{job_id}/cancel")
+def api_cancel_job(job_id: int, session: Session = Depends(get_session)):
+    outcome = jobs_queue.request_cancel(session, job_id)
+    if outcome is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"job_id": job_id, "outcome": outcome}
+
+
+@app.post("/api/v1/jobs/{job_id}/run", status_code=202)
+def api_run_job(job_id: int, session: Session = Depends(get_session)):
+    """Start a native collector now (the API twin of the job page button)."""
+    job = session.get(ScanJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    state = _arm_native_job(session, job)
+    if state in ("running", "done"):
+        raise HTTPException(status_code=409, detail=f"job #{job_id} is {state}")
+    _start_native_job(job.id, job.runner)
+    return {"job_id": job.id, "runner": job.runner, "status": "started"}
+
+
+@app.post("/api/v1/jobs/{job_id}/retry")
+def api_retry_job(job_id: int, session: Session = Depends(get_session)):
+    job = session.get(ScanJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if _is_imported_job(job):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Imported Leadline jobs are historical; queue a new scan "
+                "instead of retrying this row."
+            ),
+        )
+    clone = ScanJob(
+        program_id=job.program_id,
+        runner=job.runner,
+        target=job.target,
+        status="queued",
+        header_profile_id=job.header_profile_id,
+        params=dict(job.params or {}),
+        priority=int(job.priority or 0),
+        max_attempts=int(job.max_attempts or 3),
+    )
+    session.add(clone)
+    session.commit()
+    session.refresh(clone)
+    return {"job_id": clone.id, "status": "queued", "retry_of": job_id}
 
 
 def _profile_dict(profile: HeaderProfile) -> dict:
@@ -2041,6 +2846,15 @@ def api_job_status(job_id: int, payload: dict = Body(...), session: Session = De
     status = str(payload.get("status", "") or "")
     if status not in JOB_STATUSES:
         raise HTTPException(status_code=400, detail=f"Bad status (one of {JOB_STATUSES})")
+    if (
+        status == "done"
+        and job.runner in collector_ids()
+        and job.output_paste_id is None
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="A native job cannot be done without a linked output capture",
+        )
     job.status = status
     if status == "running" and job.started_at is None:
         job.started_at = datetime.now(timezone.utc)
@@ -2054,54 +2868,93 @@ def api_job_status(job_id: int, payload: dict = Body(...), session: Session = De
 
 
 @app.get("/api/v1/backup")
-def api_backup(session: Session = Depends(get_session)):  # noqa: ARG001
-    """Download the raw SQLite database file."""
+def api_backup():
+    """Download a consistent SQLite snapshot (WAL-safe, integrity-checked)."""
     from fastapi.responses import FileResponse
+    from starlette.background import BackgroundTask
 
-    engine.dispose()
+    tmpdir = Path(tempfile.mkdtemp(prefix="breadcrumb-backup-"))
+    dest = tmpdir / "breadcrumb.db"
+    try:
+        backup_database(dest)
+    except Exception as exc:  # noqa: BLE001
+        import shutil
+
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Backup failed: {exc}") from exc
+
+    def _cleanup() -> None:
+        import shutil
+
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
     return FileResponse(
-        path=str(DB_PATH),
+        path=str(dest),
         filename=f"breadcrumb-backup-{datetime.now(timezone.utc):%Y%m%d}.db",
         media_type="application/x-sqlite3",
+        background=BackgroundTask(_cleanup),
     )
 
 
 @app.post("/backup/restore")
-def restore_backup(
-    upload: UploadFile = File(...),
-    session: Session = Depends(get_session),  # noqa: ARG001
-):
+def restore_backup(upload: UploadFile = File(...)):
     """Replace the database from an uploaded backup file (validated first)."""
-    import os
-    import shutil
-    import sqlite3
-    import tempfile
-
     raw = upload.file.read(100 * 1024 * 1024 + 1)
     if len(raw) > 100 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="Backup too large (max 100 MB)")
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
+    tmpdir = Path(tempfile.mkdtemp(prefix="breadcrumb-restore-"))
+    source = tmpdir / "upload.db"
     try:
-        tmp.write(raw)
-        tmp.close()
+        source.write_bytes(raw)
         try:
-            conn = sqlite3.connect(tmp.name)
-            conn.execute("PRAGMA integrity_check").fetchall()
-            tables = {r[0] for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-            conn.close()
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail=f"Not a valid SQLite file: {exc}")
-        if not {"program", "entity", "paste"} <= tables:
-            raise HTTPException(status_code=400, detail="Not a Breadcrumb database")
-        engine.dispose()
-        shutil.copy(tmp.name, DB_PATH)
-        init_db()
+            restore_database(source)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except sqlite3.DatabaseError as exc:
+            raise HTTPException(status_code=400, detail=f"Not a valid SQLite file: {exc}") from exc
     finally:
-        os.unlink(tmp.name)
+        import shutil
+
+        shutil.rmtree(tmpdir, ignore_errors=True)
     return RedirectResponse("/", status_code=303)
 
 
 @app.get("/health")
-def health():
-    return {"status": "ok", "version": APP_VERSION}
+def health(session: Session = Depends(get_session)):
+    """Liveness + local queue/schema status for the CLI and the UI banner."""
+    state = get_app_state(session)
+    now = datetime.now(timezone.utc)
+
+    def _count(*where) -> int:
+        return int(
+            session.exec(select(func.count()).select_from(ScanJob).where(*where)).one() or 0
+        )
+
+    try:
+        wal_mode = str(session.connection().exec_driver_sql("PRAGMA journal_mode").scalar() or "")
+    except Exception:  # noqa: BLE001
+        wal_mode = "unknown"
+    last_heartbeat = session.exec(select(func.max(JobAttempt.heartbeat_at))).one()
+    return {
+        "status": "ok",
+        "version": APP_VERSION,
+        "schema_version": state.schema_version,
+        "expected_schema_version": SCHEMA_VERSION,
+        "db_path": str(DB_PATH),
+        "wal_mode": wal_mode,
+        "maintenance": bool(state.maintenance),
+        "maintenance_reason": state.maintenance_reason or "",
+        "jobs": {
+            "queued": _count(ScanJob.status == "queued"),
+            "running": _count(ScanJob.status == "running"),
+            "done": _count(ScanJob.status == "done"),
+            "failed": _count(ScanJob.status == "failed"),
+            "cancelled": _count(ScanJob.status == "cancelled"),
+        },
+        "expired_leases": _count(
+            ScanJob.status == "running",
+            ScanJob.lease_expires_at != None,  # noqa: E711
+            ScanJob.lease_expires_at < now,
+        ),
+        "last_worker_heartbeat": last_heartbeat.isoformat() if last_heartbeat else None,
+    }

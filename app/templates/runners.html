@@ -6,12 +6,24 @@
 <section class="card">
   <h2>Scan runners</h2>
   <p class="muted">
-    Breadcrumb is import-first: runners are external tools that
+    Breadcrumb is import-first, with an optional native executor for the
+    <strong>built-in</strong> collectors. External tools still
     <strong>POST output back to <code>/api/v1/pastes</code></strong> and move jobs
-    through <code>queued → running → done</code>. Queue a job here (or via the API),
-    run the tool wherever you like, pipe the output in.
+    through <code>queued → running → done</code>. Native jobs can be claimed by
+    <code>breadcrumb worker</code> or run from a job's page.
+  </p>
+  <p class="muted">
+    Executor mode: <span class="chip mono">{{ executor_mode }}</span>
+    (default <code>off</code>). Set <code>BREADCRUMB_EXECUTOR=inline</code> for
+    an in-process worker, or run <code>breadcrumb worker</code> separately.
+    External tool adapters are <strong>opt-in</strong>: run one from a job page,
+    or set <code>BREADCRUMB_EXTERNAL_TOOLS=1</code> for the durable worker to
+    claim adapter jobs. <code>BREADCRUMB_STRICT_MODE=1</code> disables adapters
+    that cannot be pinned.
+    {% if maintenance and maintenance.maintenance %}<br><span class="warn-text">Maintenance mode is on: worker claims are paused{% if maintenance.maintenance_reason %} ({{ maintenance.maintenance_reason }}){% endif %}.</span>{% endif %}
   </p>
   <form method="post" action="/jobs" class="row">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
     <select name="runner">
       {% for r in runners %}<option value="{{ r.id }}">{{ r.label }}</option>{% endfor %}
     </select>
@@ -24,8 +36,23 @@
       <option value="">(default headers)</option>
       {% for h in profiles %}<option value="{{ h.id }}">{{ h.name }}</option>{% endfor %}
     </select>
+    <input name="params" placeholder='collector options JSON, e.g. {"ports": [80, 443]}' class="mono">
+    <label class="row" style="gap:6px">
+      <input type="checkbox" name="run_now" value="on"> run now
+    </label>
     <button class="primary" type="submit">Queue job</button>
   </form>
+  <p class="dim">
+    Native collectors accept a JSON options object: <code>ports</code>,
+    <code>http_ports</code>, <code>tls_ports</code>, <code>api_paths</code>,
+    <code>subdomains</code>, <code>nvd_cache</code>, <code>nvd_lookup</code>.
+    External adapters accept only a fixed set: <code>ports</code>,
+    <code>severity</code>, <code>depth</code>, <code>rate</code> and
+    <code>wordlist</code> (ffuf). <strong>run now</strong> applies to native
+    collectors and installed external adapters; external jobs without an
+    adapter stay queued for their tool to post evidence back. The
+    <code>leadline-recon</code> runner runs the full twelve-phase preset.
+  </p>
 </section>
 
 {% for d in described|groupby('runner.category') %}
@@ -43,14 +70,21 @@
         </td>
         <td>
           {% if d2.binary_found %}<span class="badge in">on server</span>
+            {% if d2.version %}<div class="dim mono">{{ d2.version }}</div>{% endif %}
+          {% elif d2.adapter %}<span class="badge" title="install it on the executor host or run the tool externally">not installed</span>
           {% else %}<span class="badge" title="not on this server's PATH — install it where the executor runs">elsewhere</span>{% endif %}
           <div class="dim mono">{{ d2.binary }}</div>
+          {% if d2.adapter %}
+          <div class="dim">scope: {{ d2.scope_mode }}{% if d2.strict_policy %} · strict: {{ d2.strict_policy }}{% endif %}</div>
+          {% if d2.strict_disabled %}<div class="warn-text">disabled by strict mode</div>{% endif %}
+          {% endif %}
         </td>
         <td>
           {% if d2.custom %}
             <span class="badge in">always</span>
           {% else %}
             <form method="post" action="/runners/toggle">
+              <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
               <input type="hidden" name="runner_id" value="{{ r.id }}">
               <input type="hidden" name="enabled" value="{{ '' if d2.enabled else 'on' }}">
               <button class="sm {{ '' if d2.enabled else 'primary' }}" type="submit">{{ 'on' if d2.enabled else 'off' }}</button>
@@ -60,7 +94,8 @@
         <td class="actions">
           {% if d2.custom %}
             <a class="btn sm ghost" href="/runners/custom/{{ d2.custom_id }}/verify">verify</a>
-            <form method="post" action="/runners/custom/{{ d2.custom_id }}/delete" style="display:inline" data-confirm="Delete runner '{{ r.id }}'?"><button class="danger" type="submit">delete</button></form>
+            <form method="post" action="/runners/custom/{{ d2.custom_id }}/delete" style="display:inline" data-confirm="Delete runner '{{ r.id }}'?">
+              <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button class="danger" type="submit">delete</button></form>
           {% endif %}
         </td>
       </tr>
@@ -74,6 +109,7 @@
   <h2>Add your own runner</h2>
   <p class="muted">Register any tool: id, label, and the example command executors should run. New runners are validated on save (id format, uniqueness, example sanity, binary presence) and are always active. Jobs only accept <strong>active</strong> runners.</p>
   <form method="post" action="/runners/custom" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
     <div class="row">
       <input name="runner_id" placeholder="id (e.g. ffuf)" required pattern="[a-z0-9][a-z0-9-]{1,40}">
       <input name="label" placeholder="label (e.g. Ffuf)">
@@ -89,6 +125,7 @@
     <h2>Job queue <span class="count">{{ jobs|length }}</span></h2>
     {% if jobs %}
     <form method="post" action="/jobs/clear" data-confirm="Remove all finished/failed/cancelled jobs?">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
       <button class="ghost sm" type="submit">Clear finished</button>
     </form>
     {% endif %}
@@ -98,6 +135,7 @@
     <thead><tr><th>#</th><th>Runner</th><th>Target</th><th>Status</th><th>Headers</th><th>Program</th><th>Queued</th><th></th></tr></thead>
     <tbody>
       {% for j in jobs %}
+      {% set imported = (j.params or {}).get('imported') %}
       <tr>
         <td><a href="/jobs/{{ j.id }}">{{ j.id }}</a></td>
         <td><span class="chip mono">{{ j.runner }}</span></td>
@@ -108,12 +146,19 @@
         <td class="muted">{{ j.created_at.strftime('%Y-%m-%d %H:%M UTC') if j.created_at else '' }}</td>
         <td class="actions">
           <a class="btn sm ghost" href="/jobs/{{ j.id }}">view</a>
-          {% if j.status in ['queued', 'running'] %}
-          <form method="post" action="/jobs/{{ j.id }}/cancel" style="display:inline"><button class="sm" type="submit">cancel</button></form>
-          {% else %}
-          <form method="post" action="/jobs/{{ j.id }}/retry" style="display:inline"><button class="sm" type="submit">retry</button></form>
+          {% if j.runner in native_ids and j.status == 'queued' and not imported %}
+          <form method="post" action="/jobs/{{ j.id }}/run" style="display:inline">
+            <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button class="sm primary" type="submit">run</button></form>
           {% endif %}
-          <form method="post" action="/jobs/{{ j.id }}/delete" style="display:inline" data-confirm="Delete job #{{ j.id }}?"><button class="danger" type="submit">delete</button></form>
+          {% if j.status in ['queued', 'running'] and not imported %}
+          <form method="post" action="/jobs/{{ j.id }}/cancel" style="display:inline">
+            <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button class="sm" type="submit">cancel</button></form>
+          {% elif not imported %}
+          <form method="post" action="/jobs/{{ j.id }}/retry" style="display:inline">
+            <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button class="sm" type="submit">retry</button></form>
+          {% endif %}
+          <form method="post" action="/jobs/{{ j.id }}/delete" style="display:inline" data-confirm="Delete job #{{ j.id }}?">
+            <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button class="danger" type="submit">delete</button></form>
         </td>
       </tr>
       {% endfor %}

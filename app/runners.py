@@ -28,12 +28,23 @@ class BaseRunner:
     kinds: tuple = ("domain", "ip", "cidr", "url")
     category: str = "misc"
     binary: str = ""  # executable to probe with shutil.which; defaults to example's first word
+    native: bool = False  # implemented in-process by app.collect; no binary needed
+    adapter: bool = False  # opt-in external-tool adapter in app.collect.tools
+    scope_mode: str = ""  # ip_literal | resolve_override | preflight_only | passive
+    strict_policy: str = ""  # always | ip_only | never
+    version_args: tuple = ()
 
 
 REGISTRY: dict[str, BaseRunner] = {}
 
 # Built-ins active out of the box; everything else is opt-in on /runners.
-DEFAULT_ACTIVE = {"nmap", "subfinder", "nuclei", "httpx"}
+DEFAULT_ACTIVE = {
+    "nmap", "subfinder", "nuclei", "httpx",
+    "leadline-dns", "leadline-http", "leadline-tech", "leadline-headers",
+    "leadline-host-intel", "leadline-ports", "leadline-js", "leadline-params",
+    "leadline-api", "leadline-vulns", "leadline-cve", "leadline-graph",
+    "leadline-recon",
+}
 
 
 def register(runner: BaseRunner) -> BaseRunner:
@@ -56,18 +67,28 @@ def binary_found(binary: str) -> bool:
 # ---------------- catalog ----------------
 # Port / service discovery
 register(BaseRunner("nmap", "Nmap", "Port/service discovery, OS detection, NSE scripts.",
-    "nmap -sV -sC -oA scan target", kinds=("domain", "ip", "cidr"), category="port-scan"))
+    "nmap -sV -sC -oA scan target", kinds=("domain", "ip", "cidr"), category="port-scan",
+    adapter=True, scope_mode="ip_literal", strict_policy="ip_only",
+    version_args=("--version",)))
 register(BaseRunner("naabu", "Naabu", "Fast SYN port scanner (ProjectDiscovery).",
-    "naabu -host target.com -top-ports 1000", kinds=("domain", "ip"), category="port-scan"))
+    "naabu -host target.com -top-ports 1000", kinds=("domain", "ip"), category="port-scan",
+    adapter=True, scope_mode="ip_literal", strict_policy="ip_only",
+    version_args=("-version",)))
 register(BaseRunner("masscan", "Masscan", "Internet-scale async port scanner.",
-    "masscan 10.0.0.0/24 -p1-65535 --rate 10000", kinds=("ip", "cidr"), category="port-scan"))
+    "masscan 10.0.0.0/24 -p1-65535 --rate 10000", kinds=("ip", "cidr"), category="port-scan",
+    adapter=True, scope_mode="ip_literal", strict_policy="always",
+    version_args=("--version",)))
 register(BaseRunner("rustscan", "RustScan", "Fast port scanner that hands off to nmap.",
     "rustscan -a 10.0.0.1 -- -sV", kinds=("ip", "domain"), category="port-scan"))
 # Subdomain enumeration
 register(BaseRunner("subfinder", "Subfinder", "Passive subdomain enumeration (ProjectDiscovery).",
-    "subfinder -d target.com -silent", kinds=("domain",), category="subdomain"))
+    "subfinder -d target.com -silent", kinds=("domain",), category="subdomain",
+    adapter=True, scope_mode="passive", strict_policy="always",
+    version_args=("-version",)))
 register(BaseRunner("amass", "Amass", "Attack-surface mapping: intel + enum + track (OWASP).",
-    "amass enum -d target.com", kinds=("domain", "ip", "cidr"), category="subdomain"))
+    "amass enum -d target.com", kinds=("domain", "ip", "cidr"), category="subdomain",
+    adapter=True, scope_mode="passive", strict_policy="always",
+    version_args=("-version",)))
 register(BaseRunner("findomain", "Findomain", "Fast passive subdomain enumerator.",
     "findomain -t target.com", kinds=("domain",), category="subdomain"))
 register(BaseRunner("assetfinder", "assetfinder", "Simple subdomain finder (Tom Hudson).",
@@ -84,12 +105,24 @@ register(BaseRunner("shuffledns", "shuffledns", "Mass DNS bruteforce with wildca
     "shuffledns -d target.com -w wordlist.txt -r resolvers.txt", kinds=("domain",), category="subdomain"))
 # HTTP probing
 register(BaseRunner("httpx", "httpx", "Live-host probing and tech fingerprinting (PD).",
-    "httpx -l hosts.txt -json", kinds=("domain", "ip", "url"), category="http"))
+    "httpx -l hosts.txt -json", kinds=("domain", "ip", "url"), category="http",
+    adapter=True, scope_mode="resolve_override", strict_policy="always",
+    version_args=("-version",)))
 register(BaseRunner("tlsx", "tlsx", "TLS grabber: certs, JARM, misconfigs (PD).",
     "tlsx -l hosts.txt -silent", kinds=("domain", "ip"), category="http"))
+register(BaseRunner("whatweb", "WhatWeb", "Web technology fingerprinting with plugin versions.",
+    "whatweb --log-json=whatweb.json https://target.com", kinds=("url", "domain"),
+    category="http", adapter=True, scope_mode="preflight_only",
+    strict_policy="never", version_args=("--version",)))
+register(BaseRunner("wafw00f", "wafw00f", "Web application firewall fingerprinting.",
+    "wafw00f https://target.com -f json -o wafw00f.json", kinds=("url", "domain"),
+    category="http", adapter=True, scope_mode="preflight_only",
+    strict_policy="never", version_args=("--version",)))
 # Crawling / endpoints
 register(BaseRunner("katana", "Katana", "Next-gen crawling and spidering (PD).",
-    "katana -u https://target.com -d 3", kinds=("url", "domain"), category="crawl"))
+    "katana -u https://target.com -d 3", kinds=("url", "domain"), category="crawl",
+    adapter=True, scope_mode="preflight_only", strict_policy="never",
+    version_args=("-version",)))
 register(BaseRunner("gau", "gau", "Fetch known URLs from AlienVault/Wayback/CommonCrawl.",
     "gau target.com", kinds=("domain",), category="crawl"))
 register(BaseRunner("waybackurls", "waybackurls", "Wayback Machine URL fetcher (Tom Hudson).",
@@ -99,7 +132,9 @@ register(BaseRunner("hakrawler", "hakrawler", "Fast crawler for endpoints and JS
     binary="hakrawler"))
 # Fuzzing / content discovery
 register(BaseRunner("ffuf", "ffuf", "Fast web fuzzer: dirs, params, vhosts.",
-    "ffuf -u https://target.com/FUZZ -w wordlist.txt", kinds=("url", "domain"), category="fuzz"))
+    "ffuf -u https://target.com/FUZZ -w wordlist.txt", kinds=("url", "domain"), category="fuzz",
+    adapter=True, scope_mode="preflight_only", strict_policy="never",
+    version_args=("-V",)))
 register(BaseRunner("gobuster", "gobuster", "Directory/DNS/vhost busting (OJ Reeves).",
     "gobuster dir -u https://target.com -w wordlist.txt", kinds=("url", "domain"), category="fuzz"))
 register(BaseRunner("feroxbuster", "feroxbuster", "Recursive content discovery with auto-tuning.",
@@ -108,9 +143,13 @@ register(BaseRunner("dirsearch", "dirsearch", "Mature web path scanner.",
     "dirsearch -u https://target.com", kinds=("url",), category="fuzz"))
 # Vulnerability scanning
 register(BaseRunner("nuclei", "Nuclei", "Template-based vuln scanning, 6500+ checks (PD).",
-    "nuclei -l targets.txt -jsonl", kinds=("domain", "ip", "url"), category="vuln"))
+    "nuclei -l targets.txt -jsonl", kinds=("domain", "ip", "url"), category="vuln",
+    adapter=True, scope_mode="preflight_only", strict_policy="never",
+    version_args=("-version",)))
 register(BaseRunner("dalfox", "Dalfox", "Parameter analysis and XSS scanner.",
-    "dalfox url 'https://target.com/?q=1'", kinds=("url",), category="vuln"))
+    "dalfox url 'https://target.com/?q=1'", kinds=("url",), category="vuln",
+    adapter=True, scope_mode="preflight_only", strict_policy="never",
+    version_args=("version",)))
 register(BaseRunner("nikto", "Nikto", "Venerable web-server scanner, 6700+ checks.",
     "nikto -h https://target.com", kinds=("url", "ip"), category="vuln"))
 register(BaseRunner("wpscan", "WPScan", "WordPress vulnerability scanner.",
@@ -126,6 +165,62 @@ register(BaseRunner("asnmap", "asnmap", "Map org/IP/ASN to CIDRs (PD).",
     "asnmap -org 'Org Name'", kinds=("domain", "ip"), category="net-inventory"))
 register(BaseRunner("mapcidr", "mapcidr", "CIDR math: split, merge, filter IPs (PD).",
     "mapcidr -cidr 10.0.0.0/24", kinds=("cidr", "ip"), category="net-inventory"))
+
+# Native collectors (absorbed from Leadline). These run in-process through
+# `python -m app.cli worker` or the job page's "run now" action.
+register(BaseRunner("leadline-dns", "DNS discovery (native)",
+    "A/AAAA/CNAME records plus optional subdomains, scope-guarded.",
+    "leadline-dns example.com", kinds=("domain", "ip", "url"),
+    category="native", native=True))
+register(BaseRunner("leadline-http", "HTTP probe (native)",
+    "HTTP status, title, server, tech, CNAME and headers; manual redirects.",
+    "leadline-http https://example.com", kinds=("domain", "ip", "url"),
+    category="native", native=True))
+register(BaseRunner("leadline-tech", "Tech detection (native)",
+    "HTTP probe emitted as httpx JSONL for technology fingerprints.",
+    "leadline-tech https://example.com", kinds=("domain", "ip", "url"),
+    category="native", native=True))
+register(BaseRunner("leadline-headers", "Security headers (native)",
+    "HTTP probe emitted as raw response dumps for header analysis.",
+    "leadline-headers https://example.com", kinds=("domain", "ip", "url"),
+    category="native", native=True))
+register(BaseRunner("leadline-host-intel", "Host intel (native)",
+    "A/AAAA, CNAME and reverse-DNS evidence; external sources stay opt-in.",
+    "leadline-host-intel example.com", kinds=("domain", "ip", "url"),
+    category="native", native=True))
+register(BaseRunner("leadline-ports", "Port scan (native)",
+    "TCP connect scan with banners, TLS certificate fields and high-risk-port candidates.",
+    "leadline-ports example.com", kinds=("domain", "ip", "url"),
+    category="native", native=True))
+register(BaseRunner("leadline-js", "JavaScript analysis (native)",
+    "Same-origin scripts, inferred endpoints and parameter names; never executes JS.",
+    "leadline-js https://example.com", kinds=("domain", "ip", "url"),
+    category="native", native=True))
+register(BaseRunner("leadline-params", "Parameter discovery (native)",
+    "URL query and form-field discovery from HTML; no fuzzing.",
+    "leadline-params https://example.com", kinds=("domain", "ip", "url"),
+    category="native", native=True))
+register(BaseRunner("leadline-api", "API discovery (native)",
+    "Common REST/GraphQL/OpenAPI paths; observed responses become httpx evidence.",
+    "leadline-api https://example.com", kinds=("domain", "ip", "url"),
+    category="native", native=True))
+register(BaseRunner("leadline-vulns", "Vulnerability candidates (native)",
+    "Pattern candidates from observed paths, params and headers; never confirmed.",
+    "leadline-vulns https://example.com", kinds=("domain", "ip", "url"),
+    category="native", native=True))
+register(BaseRunner("leadline-cve", "CVE candidates (native)",
+    "Offline CVE references; optional NVD keyword lookup stays unverified.",
+    "leadline-cve https://example.com", kinds=("domain", "ip", "url"),
+    category="native", native=True))
+register(BaseRunner("leadline-graph", "Graph observations (native)",
+    "Host/IP/port observations emitted as nmap XML for Breadcrumb's graph.",
+    "leadline-graph example.com", kinds=("domain", "ip", "url"),
+    category="native", native=True))
+register(BaseRunner("leadline-recon", "Leadline recon preset (native)",
+    "Runs DNS, host intel, ports/TLS, HTTP, tech, JS, params, headers, API, "
+    "vuln candidates, CVE candidates and graph observations in order.",
+    "leadline-recon https://example.com", kinds=("domain", "ip", "url"),
+    category="native", native=True))
 
 
 def list_runners() -> list[BaseRunner]:
@@ -182,6 +277,9 @@ def describe_all(session) -> list[dict]:
     from .models import CustomRunner
     from sqlmodel import select
 
+    from .collect.tools import probe_version, strict_mode
+
+    strict = strict_mode()
     customs = {
         c.runner_id: c
         for c in session.exec(select(CustomRunner)).all()
@@ -190,14 +288,26 @@ def describe_all(session) -> list[dict]:
     for runner in list_runners():
         binary = runner_binary(runner)
         custom = customs.get(runner.id)
+        adapter = bool(getattr(runner, "adapter", False))
+        found = True if runner.native else binary_found(binary)
+        version = ""
+        if adapter and found:
+            version = probe_version(binary, tuple(runner.version_args or ()))
         out.append(
             {
                 "runner": runner,
                 "enabled": is_active(session, runner.id),
                 "custom": custom is not None,
                 "custom_id": custom.id if custom else None,
-                "binary": binary,
-                "binary_found": binary_found(binary),
+                "binary": "built-in" if runner.native else binary,
+                "binary_found": found,
+                "adapter": adapter,
+                "scope_mode": runner.scope_mode,
+                "strict_policy": runner.strict_policy,
+                "strict_disabled": bool(
+                    adapter and strict and runner.strict_policy == "never"
+                ),
+                "version": version,
             }
         )
     for rid in sorted(set(customs) - set(REGISTRY)):
@@ -218,6 +328,11 @@ def describe_all(session) -> list[dict]:
                 "custom_id": custom.id,
                 "binary": binary,
                 "binary_found": binary_found(binary),
+                "adapter": False,
+                "scope_mode": "",
+                "strict_policy": "",
+                "strict_disabled": False,
+                "version": "",
             }
         )
     return out
@@ -237,6 +352,8 @@ def validate_custom(runner_id: str, example: str, session) -> list[tuple[str, st
     from .models import CustomRunner
     from sqlmodel import select
 
+    from .collect import adapter_ids, collector_ids
+
     report: list[tuple[str, str]] = []
     if not re.match(r"^[a-z0-9][a-z0-9-]{1,40}$", runner_id):
         report.append(("err", "id must be 2-41 chars: lowercase letters, digits, dashes"))
@@ -244,6 +361,10 @@ def validate_custom(runner_id: str, example: str, session) -> list[tuple[str, st
         report.append(("ok", "id format is valid"))
     if get_runner(runner_id) is not None:
         report.append(("err", f"id collides with built-in runner '{runner_id}'"))
+    elif runner_id in collector_ids():
+        report.append(("err", f"id collides with native collector '{runner_id}'"))
+    elif runner_id in adapter_ids():
+        report.append(("err", f"id collides with external adapter '{runner_id}'"))
     elif session.exec(
         select(CustomRunner).where(CustomRunner.runner_id == runner_id)
     ).first():

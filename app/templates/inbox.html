@@ -8,6 +8,7 @@
   <h2>Paste / import</h2>
   <p class="muted">Drop raw tool output. Assign a program now, or leave it here and sort it later.</p>
   <form method="post" action="/paste" class="stack" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
     <textarea name="text" rows="10" placeholder="paste raw output here… (or attach a file below)"></textarea>
     <label class="field">…or upload a file (nmap text/greppable/XML, nuclei JSONL, any text — max 5 MB)
       <input type="file" name="upload">

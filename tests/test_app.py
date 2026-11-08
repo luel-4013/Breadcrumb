@@ -16,6 +16,8 @@ from app.main import app  # noqa: E402
 
 init_db()
 client = TestClient(app)
+client.get("/health")
+client.headers["X-CSRF-Token"] = client.cookies["bc_csrf"]
 
 NMAP = """Starting Nmap 7.94
 Nmap scan report for web.acme.test (10.0.0.5)
@@ -380,3 +382,318 @@ def test_job_with_header_profile():
     r = client.post("/api/v1/jobs",
                     json={"runner": "httpx", "header_profile_id": 999999})
     assert r.status_code == 400
+
+
+# ---------------- Phase 0: local boundaries, chain, backup ----------------
+
+
+def test_host_header_allowlist():
+    assert client.get("/health").status_code == 200
+    assert client.get("/health", headers={"host": "localhost:8787"}).status_code == 200
+    assert client.get("/health", headers={"host": "evil.example"}).status_code == 400
+    assert client.get("/health", headers={"host": "127.0.0.1:8787"}).status_code == 200
+
+
+def test_csrf_blocks_cross_site_form_posts():
+    fresh = TestClient(app)
+    r = fresh.post("/programs", data={"name": "csrf-no-cookie"}, follow_redirects=False)
+    assert r.status_code == 403
+    fresh.get("/health")
+    token = fresh.cookies["bc_csrf"]
+
+    r = fresh.post("/programs", data={"name": "csrf-no-token"}, follow_redirects=False)
+    assert r.status_code == 403
+
+    # A token minted for another browser session is not accepted.
+    r = fresh.post(
+        "/programs",
+        data={"name": "csrf-other-client", "csrf_token": client.cookies["bc_csrf"]},
+        follow_redirects=False,
+    )
+    assert r.status_code == 403
+
+    r = fresh.post(
+        "/programs",
+        data={"name": "csrf-ok", "csrf_token": token},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+
+    r = fresh.post(
+        "/programs",
+        data={"name": "csrf-origin", "csrf_token": token},
+        headers={"origin": "http://evil.example"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 403
+
+    r = fresh.post(
+        "/programs",
+        data={"name": "csrf-header"},
+        headers={"x-csrf-token": token},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+
+
+def test_backup_snapshot_is_consistent():
+    import sqlite3
+
+    from sqlmodel import Session, func, select
+
+    from app.db import backup_database, engine
+    from app.models import Paste
+
+    dest = os.path.join(_tmp, "backup-consistency.db")
+    backup_database(dest)
+    conn = sqlite3.connect(dest)
+    try:
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert {"program", "entity", "paste"} <= tables
+        backed_up = conn.execute("SELECT COUNT(*) FROM paste").fetchone()[0]
+    finally:
+        conn.close()
+    with Session(engine) as session:
+        live = session.exec(select(func.count()).select_from(Paste)).one()
+    assert backed_up == live
+
+
+def test_restore_rejects_non_breadcrumb_database():
+    import sqlite3
+
+    bad = os.path.join(_tmp, "not-breadcrumb.db")
+    conn = sqlite3.connect(bad)
+    conn.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
+    conn.commit()
+    conn.close()
+    with open(bad, "rb") as fh:
+        raw = fh.read()
+    r = client.post(
+        "/backup/restore",
+        files={"upload": ("not-breadcrumb.db", raw, "application/x-sqlite3")},
+        follow_redirects=False,
+    )
+    assert r.status_code == 400
+    assert "Breadcrumb" in r.text
+
+
+def test_backup_restore_roundtrip():
+    from sqlmodel import Session, func, select
+
+    from app.db import backup_database, engine, restore_database
+    from app.models import Paste
+
+    with Session(engine) as session:
+        before = session.exec(select(func.count()).select_from(Paste)).one()
+    src = os.path.join(_tmp, "roundtrip.db")
+    backup_database(src)
+    restore_database(src)
+    with Session(engine) as session:
+        after = session.exec(select(func.count()).select_from(Paste)).one()
+    assert after == before
+    assert client.get("/api/v1/verify").json()["valid"] is True
+
+
+def test_llm_model_roles_and_fit_estimates():
+    from app import llm
+
+    info = llm.model_roles("qwen3-4b-instruct-2507")
+    assert "reports" in info["roles"]
+    assert "Report compilation" in info["role_labels"]
+    gemma = llm.model_roles("google/gemma-4-12b-qat")
+    assert "writing" in gemma["roles"]
+    assert "12B" in gemma["note"]
+
+    gpu = {"name": "GTX 1650", "total_mb": 4096, "free_mb": 3719,
+           "total_gb": 4.0, "free_gb": 3.63}
+    assert llm.estimate_fit(2_899_221_600, gpu)["level"] == "fits"
+    assert llm.estimate_fit(3_300_000_000, gpu)["level"] == "tight"
+    assert llm.estimate_fit(6_980_000_000, gpu)["level"] == "too-large"
+
+
+def test_llm_detailed_listing_merges_metadata(monkeypatch):
+    from app import llm
+
+    provider = {
+        "id": "lmstudio",
+        "label": "LM Studio (local)",
+        "base_url": "http://127.0.0.1:1234/v1",
+    }
+    monkeypatch.setattr(
+        llm, "_request", lambda *args, **kwargs: {"data": [{"id": "qwen3-4b-instruct-2507"}]}
+    )
+    monkeypatch.setattr(llm, "gpu_info", lambda: {
+        "name": "GTX 1650", "total_mb": 4096, "free_mb": 3719,
+        "total_gb": 4.0, "free_gb": 3.63,
+    })
+    monkeypatch.setattr(llm, "_lmstudio_native_metadata", lambda provider, timeout=5.0: {
+        "qwen3-4b-instruct-2507": {
+            "id": "qwen3-4b-instruct-2507",
+            "state": "not-loaded",
+            "max_context_length": 262144,
+            "capabilities": ["tool_use"],
+        }
+    })
+    monkeypatch.setattr(llm, "_lmstudio_cli_metadata", lambda: {
+        "qwen3-4b-instruct-2507": {
+            "modelKey": "qwen3-4b-instruct-2507",
+            "displayName": "Qwen3 4B Instruct 2507 UD",
+            "publisher": "unsloth",
+            "paramsString": "4B",
+            "sizeBytes": 2_899_221_600,
+            "quantization": {"name": "Q5_K_XL"},
+        }
+    })
+    monkeypatch.setattr(llm, "_loaded_lmstudio_models", lambda: {})
+    monkeypatch.setattr(llm, "_lms_path", lambda: "/usr/bin/lms")
+
+    result = llm.list_models_detailed(provider, timeout=1)
+    assert result["ok"] is True
+    assert result["count"] == 1
+    model = result["models"][0]
+    assert model["fit"]["level"] == "fits"
+    assert model["size_label"] == "2.90 GB"
+    assert "reports" in model["roles"]
+    assert result["suggestions"]
+
+
+def test_llm_detailed_listing_offline(monkeypatch):
+    import urllib.error
+
+    from app import llm
+
+    def refuse(*args, **kwargs):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(llm, "_request", refuse)
+    monkeypatch.setattr(llm, "gpu_info", lambda: {})
+    result = llm.list_models_detailed(
+        {"id": "lmstudio", "base_url": "http://127.0.0.1:1234/v1"}, timeout=1
+    )
+    assert result["ok"] is False
+    assert result["reachable"] is False
+    assert "cannot reach" in result["error"]
+
+
+def test_llm_chat_detailed_flags_reasoning_only(monkeypatch):
+    from app import llm
+
+    def fake_request(method, url, provider, payload=None, timeout=30.0):
+        return {
+            "choices": [{
+                "message": {"content": "", "reasoning_content": "thinking..."},
+                "finish_reason": "length",
+            }],
+            "usage": {"completion_tokens": 12, "prompt_tokens": 3},
+        }
+
+    monkeypatch.setattr(llm, "_request", fake_request)
+    detail = llm.chat_detailed(
+        {"base_url": "http://127.0.0.1:1234/v1"},
+        "model",
+        [{"role": "user", "content": "hi"}],
+        timeout=1,
+    )
+    assert detail["reasoning_only"] is True
+    assert detail["empty_content"] is True
+    assert detail["content"] == ""
+    assert detail["completion_tokens"] == 12
+
+
+def test_llm_test_model_reports_reasoning_only(monkeypatch):
+    from app import llm
+
+    monkeypatch.setattr(llm, "chat_detailed", lambda *args, **kwargs: {
+        "content": "",
+        "reasoning": "thinking...",
+        "finish_reason": "length",
+        "completion_tokens": 12,
+        "prompt_tokens": 3,
+        "elapsed_s": 1.5,
+        "tok_per_s": 8.0,
+        "empty_content": True,
+        "reasoning_only": True,
+    })
+    monkeypatch.setattr(llm, "_loaded_lmstudio_models", lambda: {})
+    result = llm.test_model(
+        {"id": "lmstudio", "base_url": "http://127.0.0.1:1234/v1"},
+        "model",
+        timeout=1,
+    )
+    assert result["ok"] is True
+    assert result["usable"] is False
+    assert result["verdict"] == "reasoning-only"
+    assert "reasoning" in result["error"]
+
+
+def test_settings_has_model_picker():
+    r = client.get("/settings")
+    assert r.status_code == 200
+    assert 'id="modelPicker"' in r.text
+    assert 'id="modelRefresh"' in r.text
+    assert 'id="route_fast"' in r.text
+    assert 'name="csrf-token"' in r.text
+
+
+def test_api_llm_models_detailed(monkeypatch):
+    from app import llm
+
+    config = {
+        "active_provider": "lmstudio",
+        "providers": [
+            {"id": "lmstudio", "label": "LM Studio", "base_url": "http://127.0.0.1:1234/v1"}
+        ],
+    }
+    monkeypatch.setattr(llm, "load_config", lambda: config)
+    monkeypatch.setattr(llm, "list_models_detailed", lambda provider: {
+        "ok": True,
+        "provider": provider["id"],
+        "count": 0,
+        "models": [],
+        "suggestions": [],
+    })
+    r = client.get("/api/llm/models", params={"provider_id": "lmstudio", "detailed": 1})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert r.json()["provider"] == "lmstudio"
+
+
+def test_api_llm_routes_updates_config(monkeypatch, tmp_path):
+    import json
+
+    from app import llm
+
+    path = tmp_path / "breadcrumb.llm.json"
+    path.write_text(json.dumps({
+        "active_provider": "lmstudio",
+        "providers": [
+            {"id": "lmstudio", "label": "LM Studio", "base_url": "http://127.0.0.1:1234/v1"}
+        ],
+        "routing": {task: "old-model" for task in llm.TASK_CLASSES},
+    }))
+    monkeypatch.setattr(llm, "CONFIG_PATH", path)
+
+    r = client.post("/api/llm/routes", json={
+        "task": "prose",
+        "model": "qwen3-4b-instruct-2507",
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["routing"]["prose"] == "qwen3-4b-instruct-2507"
+    saved = json.loads(path.read_text())
+    assert saved["routing"]["prose"] == "qwen3-4b-instruct-2507"
+    assert saved["routing"]["fast"] == "old-model"
+
+
+def test_api_llm_routes_requires_csrf():
+    r = client.post(
+        "/api/llm/routes",
+        json={"task": "prose", "model": "qwen3-4b-instruct-2507"},
+        headers={"X-CSRF-Token": ""},
+    )
+    assert r.status_code == 403

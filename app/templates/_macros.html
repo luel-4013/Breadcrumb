@@ -33,6 +33,7 @@
         {% if editable %}
         <td class="actions">
           <form method="post" action="/entities/{{ e.id }}/annotate" class="inline-annotate">
+            <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
             <input type="hidden" name="back" value="{{ back }}">
             <select name="verdict" title="analyst verdict">
               {% for v in ['none', 'confirmed', 'needs-review', 'false-positive'] %}
@@ -44,10 +45,12 @@
             <button class="sm" type="submit">save</button>
           </form>
           <form method="post" action="/entities/{{ e.id }}/ignore" style="display:inline">
+            <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
             <input type="hidden" name="back" value="{{ back }}">
             <button class="ghost sm" type="submit" title="{{ 'unignore' if e.ignored else 'ignore (hide from reports)' }}">{{ 'unignore' if e.ignored else 'ignore' }}</button>
           </form>
           <form method="post" action="/entities/{{ e.id }}/delete" style="display:inline" data-confirm="Delete {{ e.value }}?">
+            <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
             <button class="danger" type="submit">delete</button>
           </form>
         </td>

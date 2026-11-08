@@ -72,6 +72,7 @@
     <h2>Quick capture</h2>
     <p class="muted">Paste anything — nmap, dig, URLs, secrets, creds, hashes, JWTs. Breadcrumb detects the format.</p>
     <form method="post" action="/paste" class="stack">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
       <textarea name="text" rows="9" placeholder="paste raw output here…" required></textarea>
       <div class="row">
         <select name="program_id">
@@ -91,6 +92,7 @@
     <h2>New program</h2>
     <p class="muted">Group recon by engagement and define scope once.</p>
     <form method="post" action="/programs" class="stack">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
       <input name="name" placeholder="program / target name" required>
       <input name="platform" placeholder="platform (hackerone, bugcrowd, private…)">
       <textarea name="scope_in" rows="3" placeholder="in-scope — one per line (domain, *.wildcard, CIDR, URL)"></textarea>
@@ -105,6 +107,7 @@
     <h2>Programs <span class="count">{{ programs|length }}</span></h2>
     {% if programs %}
     <form method="post" action="/rebuild">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
       <button class="ghost sm" type="submit">Rebuild all graphs</button>
     </form>
     {% endif %}

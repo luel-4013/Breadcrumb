@@ -25,6 +25,8 @@ from app.scope import Scope  # noqa: E402
 
 init_db()
 client = TestClient(app)
+client.get("/health")
+client.headers["X-CSRF-Token"] = client.cookies["bc_csrf"]
 
 NMAP = ("Nmap scan report for web.acme.test (10.0.0.5)\n"
         "443/tcp open https\n22/tcp open ssh\n")

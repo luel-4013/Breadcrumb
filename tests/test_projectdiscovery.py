@@ -22,6 +22,8 @@ from app.parsers import REGISTRY, analyze, extract_findings, load_all  # noqa: E
 
 init_db()
 client = TestClient(app)
+client.get("/health")
+client.headers["X-CSRF-Token"] = client.cookies["bc_csrf"]
 
 NUCLEI = (
     '{"template-id":"CVE-2021-44228","info":{"name":"Apache Log4j RCE",'

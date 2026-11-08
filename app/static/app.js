@@ -293,5 +293,433 @@
       canvas.innerHTML = '<p class="empty">Nothing to plot yet.</p>';
     }
   }
+
+  // ---------- settings: model picker / tester ----------
+  var picker = document.getElementById("modelPicker");
+  if (picker) {
+    var providerSelect = document.getElementById("modelProvider");
+    var refreshBtn = document.getElementById("modelRefresh");
+    var statusEl = document.getElementById("modelStatus");
+    var summaryEl = document.getElementById("modelSummary");
+    var listEl = document.getElementById("modelList");
+    var suggestionsEl = document.getElementById("modelSuggestions");
+    var suggestionListEl = document.getElementById("modelSuggestionList");
+    var csrfMeta = document.querySelector('meta[name="csrf-token"]');
+    var csrfToken = csrfMeta ? csrfMeta.getAttribute("content") : "";
+    var pickerState = null;
+
+    function pickerNode(tag, cls, text) {
+      var node = document.createElement(tag);
+      if (cls) node.className = cls;
+      if (text != null) node.textContent = String(text);
+      return node;
+    }
+
+    function pickerBadge(text, cls) {
+      return pickerNode("span", "chip " + (cls || ""), text);
+    }
+
+    function setPickerStatus(kind, text, showRetry) {
+      statusEl.className = "picker-status " + (kind || "");
+      statusEl.innerHTML = "";
+      statusEl.appendChild(pickerNode("span", "status-dot"));
+      statusEl.appendChild(pickerNode("span", "status-text", text));
+      if (showRetry) {
+        var retry = pickerNode("button", "btn sm ghost", "Retry");
+        retry.type = "button";
+        retry.addEventListener("click", loadModels);
+        statusEl.appendChild(retry);
+      }
+    }
+
+    function providerHint(providerId) {
+      if (providerId && providerId.indexOf("jan") !== -1) {
+        return "Open Jan → Settings → Local API Server and start it on port 1337.";
+      }
+      return "Start LM Studio → Developer → Start Server on port 1234.";
+    }
+
+    function loadModels() {
+      var provider = providerSelect ? providerSelect.value : "";
+      if (!provider) {
+        setPickerStatus("bad", "No provider configured. Add one above, then refresh.");
+        return;
+      }
+      var label = providerSelect.options[providerSelect.selectedIndex].textContent;
+      setPickerStatus("checking", "Checking " + label + "…");
+      summaryEl.textContent = "";
+      listEl.innerHTML = "";
+      suggestionsEl.hidden = true;
+      refreshBtn.disabled = true;
+
+      fetch("/api/llm/models?detailed=1&provider=" + encodeURIComponent(provider))
+        .then(function (response) { return response.json(); })
+        .then(function (state) {
+          pickerState = state;
+          renderPicker(state);
+        })
+        .catch(function (err) {
+          pickerState = null;
+          setPickerStatus("bad", "Could not reach Breadcrumb: " + err.message, true);
+          summaryEl.textContent = "";
+          listEl.innerHTML = "";
+          suggestionsEl.hidden = true;
+        })
+        .then(function () { refreshBtn.disabled = false; });
+    }
+
+    function renderPicker(state) {
+      if (!state || !state.ok) {
+        var error = (state && state.error) ? state.error : "provider is not reachable";
+        setPickerStatus("bad", "Provider offline — " + error, true);
+        summaryEl.textContent = providerHint(state && state.provider);
+        renderSuggestions((state && state.suggestions) || [], []);
+        return;
+      }
+
+      var models = state.models || [];
+      var loaded = models.filter(function (m) { return String(m.state).toLowerCase() === "loaded"; }).length;
+      var fits = models.filter(function (m) { return m.fit && m.fit.level === "fits"; }).length;
+      var tight = models.filter(function (m) { return m.fit && m.fit.level === "tight"; }).length;
+      var tooLarge = models.filter(function (m) { return m.fit && m.fit.level === "too-large"; }).length;
+
+      setPickerStatus("ok", (state.provider_label || state.provider) + " · online");
+      summaryEl.innerHTML = "";
+      if (state.gpu && state.gpu.name) {
+        summaryEl.appendChild(pickerNode(
+          "span", "summary-piece",
+          state.gpu.name + " · " + state.gpu.free_gb + " GB free of " + state.gpu.total_gb + " GB"
+        ));
+      }
+      summaryEl.appendChild(pickerNode(
+        "span", "summary-piece",
+        models.length + " model" + (models.length === 1 ? "" : "s") + " · " +
+        fits + " fit" + (fits === 1 ? "" : "") + " 4 GB" +
+        (tight ? " · " + tight + " tight" : "") +
+        (tooLarge ? " · " + tooLarge + " too large" : "") +
+        (loaded ? " · " + loaded + " loaded" : "")
+      ));
+      (state.notes || []).forEach(function (note) {
+        summaryEl.appendChild(pickerNode("div", "summary-note", note));
+      });
+      if (state.autofit_hint) {
+        summaryEl.appendChild(pickerNode("div", "summary-note warn-text", state.autofit_hint));
+      }
+
+      listEl.innerHTML = "";
+      if (!models.length) {
+        listEl.appendChild(pickerNode(
+          "div", "empty-state",
+          "No models reported. Download one in LM Studio, then Refresh."
+        ));
+      } else {
+        models.forEach(function (model) { listEl.appendChild(renderModel(model, state)); });
+      }
+      renderSuggestions(state.suggestions || [], models);
+    }
+
+    function renderModel(model, state) {
+      var fitLevel = (model.fit && model.fit.level) || "unknown";
+      var card = pickerNode("article", "model-card fit-" + fitLevel);
+
+      var head = pickerNode("div", "model-head");
+      var title = pickerNode("div", "model-title");
+      title.appendChild(pickerNode("div", "model-name mono", model.id));
+      var subParts = [model.display_name, model.publisher, model.params, model.quantization]
+        .filter(function (part) { return part && part !== model.id; });
+      if (subParts.length) {
+        title.appendChild(pickerNode("div", "model-sub", subParts.join(" · ")));
+      }
+      head.appendChild(title);
+
+      var badges = pickerNode("div", "model-badges");
+      badges.appendChild(pickerBadge(
+        (model.fit && model.fit.label) || "Fit unknown",
+        "fit-badge fit-" + fitLevel
+      ));
+      if (String(model.state).toLowerCase() === "loaded") {
+        badges.appendChild(pickerBadge("loaded", "state-loaded"));
+      } else if (model.state && model.state !== "unknown") {
+        badges.appendChild(pickerBadge(model.state, ""));
+      }
+      head.appendChild(badges);
+      card.appendChild(head);
+
+      var roles = pickerNode("div", "model-roles");
+      (model.role_labels || []).forEach(function (role) {
+        roles.appendChild(pickerNode("span", "chip role-chip", role));
+      });
+      card.appendChild(roles);
+
+      card.appendChild(pickerNode("p", "model-note", model.note || ""));
+      if (model.fit && model.fit.note) {
+        card.appendChild(pickerNode("p", "model-note fit-note", model.fit.note));
+      }
+
+      var meta = [];
+      if (model.size_label) meta.push("size " + model.size_label);
+      if (model.max_context_label && model.max_context_label !== "?") {
+        meta.push("model max " + model.max_context_label);
+      }
+      if (model.loaded_context) meta.push("loaded at " + model.loaded_context);
+      if (model.fit && model.fit.vram_gb) meta.push("GPU " + model.fit.vram_gb + " GB");
+      card.appendChild(pickerNode("div", "model-meta", meta.join(" · ")));
+
+      var actions = pickerNode("div", "model-actions");
+      var isEmbedding = (model.roles || []).indexOf("embedding") !== -1;
+      var testBtn = pickerNode("button", "btn sm", "Test");
+      testBtn.type = "button";
+      testBtn.title = "Send a tiny prompt and measure speed/output.";
+      if (isEmbedding) {
+        testBtn.disabled = true;
+        testBtn.title = "Embedding models are not chat models.";
+      }
+      testBtn.addEventListener("click", function () { runModelTest(model, false, card, state); });
+      actions.appendChild(testBtn);
+
+      var autofitBtn = null;
+      if (state.can_autofit && !isEmbedding) {
+        autofitBtn = pickerNode("button", "btn sm ghost", "Auto-fit + test");
+        autofitBtn.type = "button";
+        autofitBtn.title = "Probe descending context sizes and keep the largest that works.";
+        autofitBtn.addEventListener("click", function () {
+          var ok = window.confirm(
+            "Auto-fit will unload and reload “" + model.id + "” in LM Studio, trying " +
+            "several context sizes, largest first. This can take a minute. Continue?"
+          );
+          if (ok) runModelTest(model, true, card, state);
+        });
+        actions.appendChild(autofitBtn);
+      }
+
+      var routeSelect = pickerNode("select", "route-select");
+      routeSelect.setAttribute("aria-label", "Use model for route");
+      [["", "Use for…"], ["all", "All routes"], ["fast", "Fast / bulk"],
+       ["reason", "Reasoning"], ["long", "Long context"], ["prose", "Prose / reports"]
+      ].forEach(function (pair) {
+        var option = document.createElement("option");
+        option.value = pair[0];
+        option.textContent = pair[1];
+        routeSelect.appendChild(option);
+      });
+      routeSelect.disabled = isEmbedding;
+      actions.appendChild(routeSelect);
+
+      var useBtn = pickerNode("button", "btn sm", "Use");
+      useBtn.type = "button";
+      useBtn.disabled = isEmbedding;
+      useBtn.addEventListener("click", function () {
+        applyModelRoute(model, routeSelect, card, useBtn);
+      });
+      actions.appendChild(useBtn);
+      card.appendChild(actions);
+
+      if (isEmbedding) {
+        card.appendChild(pickerNode("p", "model-warning", "Embedding model — not selectable for chat routes."));
+      } else if (fitLevel === "too-large") {
+        card.appendChild(pickerNode(
+          "p", "model-warning",
+          "Warning: this model is larger than VRAM. It stays selectable, but expect slow partial offload."
+        ));
+      }
+
+      var result = pickerNode("div", "model-result");
+      result.hidden = true;
+      result.setAttribute("aria-live", "polite");
+      card.appendChild(result);
+      return card;
+    }
+
+    function setCardBusy(card, busy) {
+      card.querySelectorAll("button, select").forEach(function (node) {
+        if (busy) {
+          node.setAttribute("data-was-disabled", node.disabled ? "1" : "0");
+          node.disabled = true;
+        } else if (node.getAttribute("data-was-disabled") === "0") {
+          node.disabled = false;
+        }
+      });
+    }
+
+    function runModelTest(model, autoFit, card, state) {
+      var resultEl = card.querySelector(".model-result");
+      setCardBusy(card, true);
+      resultEl.hidden = false;
+      resultEl.className = "model-result testing";
+      resultEl.textContent = autoFit
+        ? "Auto-fitting context… trying the largest size first. This can take a minute."
+        : "Testing model…";
+
+      fetch("/api/llm/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+        body: JSON.stringify({
+          provider: state.provider,
+          model: model.id,
+          auto_fit: autoFit
+        })
+      })
+        .then(function (response) {
+          return response.json().then(function (data) {
+            return { status: response.status, data: data };
+          });
+        })
+        .then(function (out) {
+          renderTestResult(resultEl, out.data, out.status);
+        })
+        .catch(function (err) {
+          resultEl.className = "model-result fail";
+          resultEl.textContent = "Test failed: " + err.message;
+        })
+        .then(function () { setCardBusy(card, false); });
+    }
+
+    function renderTestResult(resultEl, data, status) {
+      resultEl.innerHTML = "";
+      resultEl.hidden = false;
+      if (!data) {
+        resultEl.className = "model-result fail";
+        resultEl.textContent = "Test failed: empty response (HTTP " + status + ").";
+        return;
+      }
+      var kind = "ok";
+      var headline = "OK";
+      if (status === 403) {
+        kind = "fail";
+        headline = "Test blocked — reload the page for a fresh CSRF token";
+      } else if (!data.ok) {
+        kind = "fail";
+        headline = "Test failed";
+      } else if (data.verdict === "reasoning-only") {
+        kind = "warn";
+        headline = "Responded — reasoning only";
+      } else if (data.verdict === "empty") {
+        kind = "warn";
+        headline = "Responded — empty content";
+      } else if (data.verdict === "truncated") {
+        kind = "warn";
+        headline = "Responded — output hit the token limit";
+      } else if (data.tok_per_s) {
+        headline = "OK — " + data.tok_per_s.toFixed(1) + " tok/s";
+      }
+      resultEl.className = "model-result " + kind;
+      var head = pickerNode("div", "test-head");
+      head.appendChild(pickerNode("strong", "", headline));
+      if (data.verdict && data.ok) {
+        head.appendChild(pickerNode("span", "test-verdict", data.verdict));
+      }
+      resultEl.appendChild(head);
+
+      var metrics = [];
+      if (data.elapsed_s != null) metrics.push(data.elapsed_s + " s");
+      if (data.completion_tokens) metrics.push(data.completion_tokens + " tokens");
+      if (data.tok_per_s) metrics.push(data.tok_per_s + " tok/s");
+      if (data.context_label) metrics.push("context " + data.context_label);
+      if (data.load_s != null) metrics.push("load " + data.load_s + " s");
+      if (metrics.length) resultEl.appendChild(pickerNode("div", "test-metrics", metrics.join(" · ")));
+
+      if (data.error) {
+        resultEl.appendChild(pickerNode("div", "test-warning", data.error));
+      }
+
+      if (data.auto_fit && data.auto_fit.attempts && data.auto_fit.attempts.length) {
+        var details = document.createElement("details");
+        var summary = document.createElement("summary");
+        summary.textContent = "Context probes (" + data.auto_fit.attempts.length + ")";
+        details.appendChild(summary);
+        data.auto_fit.attempts.forEach(function (attempt) {
+          var line = attempt.context_label + ": " + (attempt.ok ? "loaded" : "failed");
+          if (attempt.load_s != null) line += " (" + attempt.load_s + " s)";
+          if (attempt.error) line += " — " + attempt.error;
+          details.appendChild(pickerNode("div", "probe-line " + (attempt.ok ? "ok" : "bad"), line));
+        });
+        resultEl.appendChild(details);
+      }
+
+      if (data.content) {
+        resultEl.appendChild(pickerNode("div", "test-reply-label", "Reply"));
+        resultEl.appendChild(pickerNode("pre", "test-reply", data.content.slice(0, 900)));
+      } else if (data.reasoning) {
+        resultEl.appendChild(pickerNode("div", "test-reply-label", "Reasoning (content was empty)"));
+        resultEl.appendChild(pickerNode("pre", "test-reply", data.reasoning.slice(0, 900)));
+      }
+    }
+
+    function applyModelRoute(model, routeSelect, card, useBtn) {
+      var task = routeSelect.value;
+      if (!task) {
+        toast("Choose a route first.", "err");
+        return;
+      }
+      useBtn.disabled = true;
+      fetch("/api/llm/routes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+        body: JSON.stringify({ task: task, model: model.id })
+      })
+        .then(function (response) {
+          return response.json().then(function (data) {
+            return { status: response.status, data: data };
+          });
+        })
+        .then(function (out) {
+          if (out.status !== 200 || !out.data.ok) {
+            throw new Error(out.data.detail || ("HTTP " + out.status));
+          }
+          Object.keys(out.data.routing || {}).forEach(function (name) {
+            var input = document.getElementById("route_" + name);
+            if (input) input.value = out.data.routing[name];
+          });
+          var message = task === "all"
+            ? "All routes now use " + model.id
+            : "Route updated: " + task + " → " + model.id;
+          toast(message, "ok");
+          card.classList.add("route-selected");
+        })
+        .catch(function (err) {
+          toast("Could not update routing: " + err.message, "err");
+        })
+        .then(function () { useBtn.disabled = false; });
+    }
+
+    function renderSuggestions(suggestions, models) {
+      suggestionListEl.innerHTML = "";
+      if (!suggestions.length) {
+        suggestionsEl.hidden = true;
+        return;
+      }
+      var installed = {};
+      (models || []).forEach(function (model) { installed[String(model.id).toLowerCase()] = true; });
+      suggestions.forEach(function (suggestion) {
+        var row = pickerNode("div", "suggestion");
+        var head = pickerNode("div", "suggestion-head");
+        head.appendChild(pickerNode("span", "suggestion-name", suggestion.name));
+        head.appendChild(pickerNode("span", "chip", suggestion.size));
+        if (suggestion.installed || installed[String(suggestion.id).toLowerCase()]) {
+          head.appendChild(pickerBadge("installed", "state-loaded"));
+        }
+        row.appendChild(head);
+        var roles = pickerNode("div", "model-roles");
+        (suggestion.role_labels || []).forEach(function (role) {
+          roles.appendChild(pickerNode("span", "chip role-chip", role));
+        });
+        row.appendChild(roles);
+        row.appendChild(pickerNode("p", "model-note", suggestion.why || ""));
+        var link = document.createElement("a");
+        link.href = suggestion.url;
+        link.target = "_blank";
+        link.rel = "noreferrer noopener";
+        link.className = "suggestion-link";
+        link.textContent = "Open download page ↗";
+        row.appendChild(link);
+        suggestionListEl.appendChild(row);
+      });
+      suggestionsEl.hidden = false;
+    }
+
+    if (providerSelect) providerSelect.addEventListener("change", loadModels);
+    if (refreshBtn) refreshBtn.addEventListener("click", loadModels);
+    loadModels();
+  }
 })();
 

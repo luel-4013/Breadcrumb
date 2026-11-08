@@ -35,6 +35,10 @@ Core bets: **offline-first** (works on a plane), **deterministic before AI**
   altered after the fact (deleted captures show as *gaps*, not false alarms).
   Useful when scope or a report is disputed — and impossible to fake without a
   chain break. No competitor offers evidence integrity.
+- **Local-only boundaries.** Breadcrumb binds to `127.0.0.1` and rejects
+  unknown `Host` headers, cross-origin writes, and form posts without a CSRF
+  token. That keeps a random web page from driving the local API through your
+  browser. There is still no login: do not expose the port to a network.
 
 ## Quickstart
 
@@ -55,11 +59,12 @@ python3.12 -m venv .venv
 
 ## Features
 
-- **16+ parsers**: nmap (text/greppable/XML), **ProjectDiscovery nuclei JSONL**
+- **20+ parsers**: nmap (text/greppable/XML), **ProjectDiscovery nuclei JSONL**
   (→ severity-tagged findings), **httpx JSON** (status, title, tech, CNAME),
   naabu/masscan port output, subfinder-style hosts, URLs, DNS records, HTTP
-  headers, JWTs, AWS-style secrets, credentials, hashes, CVEs, emails, IPs/CIDRs.
-  Re-importing tool output never duplicates findings.
+  headers, JWTs, AWS-style secrets, credentials, hashes, CVEs, emails, IPs/CIDRs,
+  **ffuf JSON**, **Dalfox JSON/JSONL**, **Amass JSON**, **WhatWeb JSON** and
+  **wafw00f JSON**. Re-importing tool output never duplicates findings.
 - **Subdomain-takeover candidates**: a host whose CNAME points at an unclaimed
   S3 bucket, Heroku app, GitHub Pages site, etc. is flagged as a high-severity
   finding (offline heuristic, from the can-i-take-over-xyz fingerprints).
@@ -72,7 +77,9 @@ python3.12 -m venv .venv
   with an SVG view and per-target clusters (large clusters are summarized, not
   rendered, so huge programs stay fast).
 - **Change detection**: each program has a *Changes* view — latest capture vs
-  everything before it (new + disappeared), Amass-`track` style.
+  everything before it (new + disappeared), Amass-`track` style — plus
+  per-target snapshot timelines and scan-to-scan diffs (findings, ports, DNS,
+  endpoints, technologies, headers, risk).
 - **Triage & accuracy**: mark entities *confirmed*, *needs-review*, or
   *false-positive*; add tags and private notes to entities and findings; ignore
   noise without deleting. False positives and ignored rows never appear in
@@ -80,9 +87,9 @@ python3.12 -m venv .venv
 - **Findings workflow**: severity + status (`open → in-progress → resolved /
   wont-fix`), tags + notes, per-target findings, HackerOne-style markdown export.
 - **Exports**: HTML, Markdown, JSON, CSV, **SARIF** (CI / GitHub code
-  scanning), HackerOne report, printable HTML (**Print → Save as PDF**),
-  `targets.txt` (pipe straight into `nuclei -l` / `httpx -l`). Secrets are
-  masked in exports unless `?reveal=1`.
+  scanning), HackerOne report, printable HTML, **PDF** with confidentiality
+  banner and escaped evidence, and `targets.txt` (pipe straight into
+  `nuclei -l` / `httpx -l`). Secrets are masked in exports unless `?reveal=1`.
 - **Local AI analyst**: *Analyze with AI* on any capture, *Summarize* per
   program. Strict JSON extraction with graceful fallback. Works with any
   OpenAI-compatible server.
@@ -96,24 +103,54 @@ python3.12 -m venv .venv
   exact copy-paste command chain (subfinder → httpx → nuclei → import),
   pre-filled with your header profile and `targets.txt` — the ProjectDiscovery
   workflow, wired back into Breadcrumb.
-- **Runner seam**: a 30+ tool catalog (nmap, naabu, masscan, subfinder, amass,
-  ffuf, nuclei, dalfox, katana, …) with activate/deactivate toggles, binary
-  presence checks, and validity reports — plus your own custom runners. Queue
-  jobs (`/runners`, `POST /api/v1/jobs`), then **cancel / retry / delete / clear**
-  and follow each job's log at `/jobs/{id}`. Executors POST results back.
-  No agent to install; BYO tooling.
+- **Native scanning + runner seam**: the twelve-phase `leadline-recon` preset
+  (DNS, host intel, ports/TLS, HTTP, tech, JS, params, headers, API, vuln
+  candidates, local CVE verification, graph) runs through a durable local
+  queue with leases, retries, cancellation and crash recovery. A 30+ tool
+  catalog (nmap, naabu, masscan, subfinder, amass, ffuf, nuclei, dalfox,
+  katana, …) keeps its import-first contract; twelve external tools have
+  opt-in adapters (`BREADCRUMB_EXTERNAL_TOOLS=1`) with scope preflight,
+  argv-only execution, process-group cancellation and output caps. The
+  executor is **off by default**; activate it with `breadcrumb worker` or
+  `BREADCRUMB_EXECUTOR=inline`.
 - **Header profiles**: randomized realistic user-agents across OS × browser ×
   device (desktop + mobile), full header sets, custom overrides, optional
   **proxy / SOCKS egress** and **rate-limit hint**, one-click curl flags.
-  Attach a profile to any scan job so executors send it.
+  Secrets are **encrypted at rest** (`enc:v1:`) with a local key; attach a
+  profile to any scan job.
 - **Notifications** (opt-in): Discord, Slack, Telegram, or a generic webhook on
   new findings (severity floor) and surface changes. Disabled by default —
   nothing leaves the machine until you add a channel.
-- **Ops**: one-file SQLite backup/restore, **auto-backup before any schema
-  migration**, composite indices for large datasets, health endpoint with
-  version, command palette (`Ctrl/Cmd+K`), filter language
+- **Ops**: one-file SQLite backup/restore using SQLite's online backup API
+  (WAL-safe, integrity-checked, atomic replace), **auto-backup before any
+  schema migration**, composite indices for large datasets, health endpoint
+  with version, command palette (`Ctrl/Cmd+K`), filter language
   (`type:port scope:in program:acme tag:needs-auth verdict:false-positive`),
   light/dark themes.
+
+## Migrating from Leadline
+
+Breadcrumb absorbed Leadline's scanning capability as additive “hands”; it
+remains the import-first notebook and the only system of record. To bring an
+existing Leadline database across, work on copies and start with a dry run:
+
+```bash
+sqlite3 "/path/to/Leadline/leadline.db" ".backup '/tmp/leadline-copy.db'"
+python -m app.cli import-leadline --db /tmp/leadline-copy.db \
+  --program-name "Leadline import" --dry-run
+python -m app.cli import-leadline --db /tmp/leadline-copy.db \
+  --program-name "Leadline import" --report /tmp/leadline-import-report.json
+python -m app.cli import-leadline --db /tmp/leadline-copy.db --verify
+```
+
+The source is opened read-only and never modified. Imported scans are
+historical and cannot be re-run; imported programs start with empty scope.
+The executor stays off until you run `python -m app.cli worker` or set
+`BREADCRUMB_EXECUTOR=inline`. See
+[docs/LEADLINE_MERGE_GUIDE.md](docs/LEADLINE_MERGE_GUIDE.md) for the full
+workflow, [docs/LEADLINE_IMPORT_VERIFICATION.md](docs/LEADLINE_IMPORT_VERIFICATION.md)
+for the real-data report, and [docs/ROLLBACK_PLAN.md](docs/ROLLBACK_PLAN.md)
+for recovery. The original Leadline folder is retained as a reference/fallback.
 
 ## Configuration
 
@@ -125,7 +162,24 @@ python3.12 -m venv .venv
 | `BREADCRUMB_RELOAD` | `1` | Dev auto-reload (`0` in Docker) |
 | `BREADCRUMB_AI_TIMEOUT` | `180` | Seconds before a local-model call is aborted with an error |
 | `BREADCRUMB_NOTIFY_CONFIG` | `./breadcrumb.notify.json` | Notification channels config file |
-| `BREADCRUMB_SKIP_BACKUP` | unset | Set `1` to skip the pre-migration DB backup |
+| `BREADCRUMB_SKIP_BACKUP` | unset | Set `1` to skip the pre-migration/restore DB backup |
+| `BREADCRUMB_ALLOWED_HOSTS` | `127.0.0.1,localhost,::1` | Extra comma-separated `Host` values allowed for local/dev access (for example `breadcrumb.lan`) |
+| `BREADCRUMB_LMS_PATH` | auto-detect | Path to the LM Studio `lms` CLI used by model Auto-fit |
+| `BREADCRUMB_JAN_MODELS` | `~/.local/share/Jan/data/llamacpp/models` | Jan model metadata directory |
+| `BREADCRUMB_SECRET_KEY` | unset (uses key file) | Fernet key or passphrase for header-profile secrets (cookies, auth headers, proxy credentials) |
+| `BREADCRUMB_SECRET_KEYS` | unset | Comma-separated rotation keys, newest first; takes precedence over `BREADCRUMB_SECRET_KEY` |
+| `BREADCRUMB_KEY_FILE` | `<DB_PATH>.key` | Secret-key file location; generated with mode `0600` on first use |
+
+Header-profile secrets are encrypted at rest with Fernet/MultiFernet. The key
+file is created next to the database on first write; **back it up separately
+from the database**. Lose it and encrypted header values are unrecoverable.
+Rotate with `python -m app.cli secrets rotate` (file-backed keys only; previous
+keys are archived at `<key>.old` until you delete that file). The local UI/API
+still shows decrypted values so the existing curl-copy workflow keeps working;
+the protection is for database files, backups, and copies of the repo. New
+pre-migration backups are scrubbed automatically; treat any older
+`*.pre-migrate-*.bak` files from before this version as sensitive and delete
+them once you have verified the migration.
 
 Limits: 5 MB per paste/file/API body, 25,000 entities per paste (truncated
 with a visible notice). Every ingest reports parser failures instead of
@@ -136,6 +190,16 @@ LLM providers are configured in the UI under **Settings** (stored in
 `http://127.0.0.1:1337/v1` (Local API Server) or LM Studio at
 `http://127.0.0.1:1234/v1`. Notification channels are configured on the same
 page (stored in `breadcrumb.notify.json`, git-ignored).
+
+**Available models** on the Settings page lists only models reported by the
+running provider. Each model shows role hints (analysis, writing, report
+compilation, code, reasoning, experimental), model max context, and a 4 GB fit
+estimate. **Test** measures output and tokens/second; **Auto-fit + test** probes
+descending context sizes and keeps the largest one that loads and answers.
+Curated download links are static — nothing is downloaded automatically and
+too-large models remain selectable with a warning. The picker can assign a
+model to one route or all four routes; per-job overrides come with the scanning
+work.
 
 ## CLI
 
@@ -148,6 +212,11 @@ python -m app.cli findings --program 1 --min-severity high
 python -m app.cli programs --json
 python -m app.cli watch ~/recon-drop --program 1   # auto-ingest a drop folder
 python -m app.cli backup -o nightly.db
+python -m app.cli worker --poll 2 --lease 120      # durable native/adapter worker
+python -m app.cli collect example.com --program 1 --collector leadline-recon
+python -m app.cli history 1 --diff                  # target timeline/diff
+python -m app.cli report 1 --format pdf -o report.pdf
+python -m app.cli import-leadline --db /path/to/leadline.db --dry-run
 ```
 
 ## API v1
@@ -169,8 +238,10 @@ curl -X POST /api/v1/entities/bulk -H 'Content-Type: application/json' \
 # CI gate: HTTP 409 + {"pass": false} when findings are at/above the threshold
 curl -f '/api/v1/gate?program_id=1&max_severity=high'
 
-# verify evidence integrity (offline hash-chain)
-curl '/api/v1/verify'   # {"valid": true, "sealed": N, "gaps": 0, "broken_at": null}
+# verify evidence integrity (offline hash-chain + head/length)
+curl '/api/v1/verify'
+# {"valid": true, "sealed": 12, "gaps": 0, "broken_at": null,
+#  "forks": 0, "sequence_ok": true, "head_ok": true, "length_ok": true}
 
 # jobs (runner seam)
 curl -X POST /api/v1/jobs -H 'Content-Type: application/json' \
@@ -178,19 +249,27 @@ curl -X POST /api/v1/jobs -H 'Content-Type: application/json' \
 curl -X POST /api/v1/jobs/1/status -H 'Content-Type: application/json' \
   -d '{"status": "running", "log": "starting..."}'
 
+# Leadline-shaped compatibility API (translation-only)
+curl /api/targets
+curl /api/scans
+curl '/api/findings?program_id=1&severity=high'
+
 # backup
 curl -O http://127.0.0.1:8787/api/v1/backup
 ```
 
 No auth — Breadcrumb binds to localhost and trusts the operator, like ZAP's
-API-key-optional local mode. Do not expose it to untrusted networks without a
+API-key-optional local mode. Unknown `Host` headers, cross-origin writes, and
+form posts without a CSRF token are rejected. JSON/raw API calls from `curl`
+are unaffected; browser form posts use a hidden token (an `X-CSRF-Token`
+header is also accepted). Do not expose it to untrusted networks without a
 reverse proxy.
 
 ## Roadmap
 
+- Publish the 0.4.0 Leadline merge release
 - Scheduled re-import (cron) on top of the drop-folder watcher
-- More parsers (ffuf, gau/katana URLs, Shodan JSON)
-- Runner executors (opt-in local job runner) with live progress
+- Scanned/OCR PDF export (text PDF is implemented)
 - Status-code scope filters and per-rule severity overrides
 
 ## Contributing

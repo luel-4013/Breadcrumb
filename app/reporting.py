@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from sqlmodel import Session, or_, select
 
 from .models import Entity, Finding, Program, Relationship, Target
+from .triage import triage_snapshot_fields
 
 # Entity types whose raw values are dangerous to share. Masked in all
 # downloadable reports unless reveal=True (UI tables and API stay verbatim).
@@ -22,6 +23,9 @@ TYPE_ORDER = [
     "credential", "secret", "jwt", "hash", "cve", "email",
     "header", "cookie", "http_status",
 ]
+
+SEVERITY_ORDER = ("critical", "high", "medium", "low", "info")
+SEVERITY_RANK = {severity: index for index, severity in enumerate(SEVERITY_ORDER)}
 
 TYPE_LABELS = {
     "domain": "Domains",
@@ -65,6 +69,96 @@ def group_entities(entities):
     return dict(sorted(groups.items(), key=lambda kv: type_rank(kv[0])))
 
 
+def severity_counts(findings) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for finding in findings:
+        severity = str(finding.severity or "info").lower()
+        counts[severity] = counts.get(severity, 0) + 1
+    ordered = {
+        severity: counts[severity]
+        for severity in SEVERITY_ORDER
+        if counts.get(severity)
+    }
+    ordered.update(
+        {key: value for key, value in counts.items() if key not in ordered}
+    )
+    return ordered
+
+
+def finding_is_verified(finding) -> bool:
+    tags = {
+        str(tag).strip().lower()
+        for tag in (getattr(finding, "tags", None) or [])
+    }
+    return bool(tags & {"applicability-verified", "verified", "local-nvd"})
+
+
+def filter_findings(findings, include_triaged: bool = False):
+    """Drop false-positive findings from deliverables unless explicitly asked.
+
+    Ignored entities are already excluded by ``collect``. This function is the
+    single switch the report exporters and PDF use, so an analyst's false
+    positive decision cannot silently resurface in a client report.
+    """
+    if include_triaged:
+        return list(findings or [])
+    return [
+        finding
+        for finding in (findings or [])
+        if not triage_snapshot_fields(finding)["is_false_positive"]
+    ]
+
+
+def risk_explanation(finding) -> str:
+    """One-line, analyst-facing explanation of what a finding's severity means."""
+    tags = {
+        str(tag).strip().lower()
+        for tag in (getattr(finding, "tags", None) or [])
+    }
+    if finding_is_verified(finding):
+        return (
+            "Locally verified by CPE/version-range correlation; confirm exposure "
+            "and exploitability before submitting."
+        )
+    if "candidate" in tags:
+        return (
+            "Candidate pattern/header match only; manual review is required "
+            "before treating it as a vulnerability."
+        )
+    severity = str(getattr(finding, "severity", "info") or "info").lower()
+    return {
+        "critical": "Remotely exploitable impact with little or no precondition; triage first.",
+        "high": "Serious confidentiality, integrity or availability impact; triage early.",
+        "medium": "Requires conditions or has limited impact; validate during the engagement.",
+        "low": "Defence-in-depth or low-impact observation; fix when practical.",
+        "info": "Informational observation; no direct security impact is claimed.",
+    }.get(severity, "Unclassified finding; review the evidence before trusting the severity.")
+
+
+def highlights(findings, limit: int = 5) -> list[dict]:
+    """Top findings with a short risk explanation, ordered by severity."""
+    ordered = sorted(
+        findings or [],
+        key=lambda finding: (
+            SEVERITY_RANK.get(str(getattr(finding, "severity", "info")).lower(), 99),
+            str(getattr(finding, "title", "")).lower(),
+        ),
+    )
+    out: list[dict] = []
+    for finding in ordered[: max(0, limit)]:
+        out.append(
+            {
+                "title": finding.title,
+                "severity": str(finding.severity or "info").lower(),
+                "cvss": finding.cvss,
+                "status": finding.status,
+                "verified": finding_is_verified(finding),
+                "explanation": risk_explanation(finding),
+            }
+        )
+    return out
+
+
 def collect(session: Session, program_id: int, include_ignored: bool = False):
     program = session.get(Program, program_id)
     targets = session.exec(
@@ -103,10 +197,16 @@ def collect(session: Session, program_id: int, include_ignored: bool = False):
     return program, targets, entities, relationships, findings
 
 
-def to_dict(session: Session, program_id: int, mask: bool = True) -> dict:
+def to_dict(
+    session: Session,
+    program_id: int,
+    mask: bool = True,
+    include_triaged: bool = False,
+) -> dict:
     program, targets, entities, relationships, findings = collect(session, program_id)
     if program is None:
         return {}
+    findings = filter_findings(findings, include_triaged)
     show = (lambda t, v: v) if not mask else mask_value
     return {
         "program": {
@@ -147,17 +247,28 @@ def to_dict(session: Session, program_id: int, mask: bool = True) -> dict:
             }
             for r in relationships
         ],
+        "summary": {
+            "findings": len(findings),
+            "findings_by_severity": severity_counts(findings),
+            "verified_findings": sum(1 for f in findings if finding_is_verified(f)),
+        },
+        "highlights": highlights(findings),
         "findings": [
             {
+                "id": f.id,
                 "title": f.title,
                 "severity": f.severity,
                 "status": f.status,
+                "verdict": f.verdict,
+                **triage_snapshot_fields(f),
                 "cvss": f.cvss,
                 "description": f.description,
                 "steps": f.steps,
                 "impact": f.impact,
                 "evidence": f.evidence,
                 "remediation": f.remediation,
+                "tags": f.tags or [],
+                "verified": finding_is_verified(f),
             }
             for f in findings
         ],
@@ -165,10 +276,16 @@ def to_dict(session: Session, program_id: int, mask: bool = True) -> dict:
     }
 
 
-def to_markdown(session: Session, program_id: int, mask: bool = True) -> str:
+def to_markdown(
+    session: Session,
+    program_id: int,
+    mask: bool = True,
+    include_triaged: bool = False,
+) -> str:
     program, targets, entities, relationships, findings = collect(session, program_id)
     if program is None:
         return ""
+    findings = filter_findings(findings, include_triaged)
     show = (lambda t, v: v) if not mask else mask_value
     lines: list[str] = []
     lines.append(f"# {program.name}")
@@ -179,6 +296,32 @@ def to_markdown(session: Session, program_id: int, mask: bool = True) -> str:
     if mask:
         lines.append("- **Note:** secret/credential/JWT values are masked in this export.")
     lines.append("")
+
+    if findings:
+        counts = severity_counts(findings)
+        verified = sum(1 for finding in findings if finding_is_verified(finding))
+        lines.append("## Highlights")
+        lines.append("")
+        summary = ", ".join(
+            f"{severity} × {count}" for severity, count in counts.items()
+        ) or "none"
+        lines.append(f"**Risk summary:** {summary}.")
+        if verified:
+            lines.append(
+                f"**Verified:** {verified} finding(s) passed a local CPE/version "
+                "applicability check; the rest still require manual review."
+            )
+        lines.append("")
+        top = highlights(findings)
+        for item in top:
+            flag = " *(verified)*" if item["verified"] else ""
+            lines.append(
+                f"- **{item['severity'].upper()}** — {item['title']}{flag}: "
+                f"{item['explanation']}"
+            )
+        if len(findings) > len(top):
+            lines.append(f"- …and {len(findings) - len(top)} more in Findings below.")
+        lines.append("")
 
     if program.scope_in or program.scope_out:
         lines.append("## Scope")
@@ -238,6 +381,13 @@ def to_markdown(session: Session, program_id: int, mask: bool = True) -> str:
         for finding in findings:
             lines.append(f"### [{finding.severity.upper()}] {finding.title}")
             lines.append("")
+            triage = triage_snapshot_fields(finding)
+            if triage["triage_status"] != "open":
+                lines.append(
+                    f"**Triage:** {triage['triage_status'].replace('_', ' ')} "
+                    f"(status `{finding.status}`, verdict `{triage['verdict']}`)"
+                )
+                lines.append("")
             if finding.description:
                 lines.append(finding.description)
                 lines.append("")
@@ -288,11 +438,14 @@ def targets_txt(session: Session, program_id: int) -> str:
     return "".join(f"{name}\n" for name in sorted(names))
 
 
-def to_hackerone(session: Session, program_id: int) -> str:
+def to_hackerone(
+    session: Session, program_id: int, include_triaged: bool = False
+) -> str:
     """Submission-friendly markdown: summary, scope, findings with repro sections, assets."""
     program, targets, entities, _, findings = collect(session, program_id)
     if program is None:
         return ""
+    findings = filter_findings(findings, include_triaged)
     lines: list[str] = []
     lines.append(f"# Security report: {program.name}")
     lines.append("")
@@ -423,7 +576,12 @@ def _slug(text: str) -> str:
     return slug[:60] or "finding"
 
 
-def to_sarif(session: Session, program_id: int, mask: bool = True) -> dict:
+def to_sarif(
+    session: Session,
+    program_id: int,
+    mask: bool = True,
+    include_triaged: bool = False,
+) -> dict:
     """SARIF 2.1.0 for CI/SAST dashboards (GitHub code scanning, etc.).
 
     Findings become results; entity/relationship inventory rides along in
@@ -434,6 +592,7 @@ def to_sarif(session: Session, program_id: int, mask: bool = True) -> dict:
     program, targets, entities, relationships, findings = collect(session, program_id)
     if program is None:
         return {}
+    findings = filter_findings(findings, include_triaged)
     target_names = {t.id: t.name for t in targets}
 
     rules: dict[str, dict] = {}
@@ -471,6 +630,7 @@ def to_sarif(session: Session, program_id: int, mask: bool = True) -> dict:
                 "properties": {
                     "severity": finding.severity,
                     "status": finding.status,
+                    **triage_snapshot_fields(finding),
                     "tags": finding.tags or [],
                     "evidence": finding.evidence if not mask else None,
                 },

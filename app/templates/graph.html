@@ -1,11 +1,24 @@
 {% extends "base.html" %}
 {% import "_macros.html" as ui with context %}
 {% block title %}{{ program.name }} · Graph · Breadcrumb{% endblock %}
+
+{% macro render_path(node) %}
+<li>
+  <span class="mono" title="{{ node.path }}">{{ node.label }}</span>
+  <span class="count">{{ node.count }}</span>
+  {% if node.children %}
+  <ul>
+    {% for child in node.children %}{{ render_path(child) }}{% endfor %}
+  </ul>
+  {% endif %}
+</li>
+{% endmacro %}
 {% block crumb %}{{ program.name }} <span class="sep">/</span> <span class="sub">Graph</span>{% endblock %}
 
 {% block actions %}
   <a class="btn ghost sm" href="/programs/{{ program.id }}">Back to program</a>
-  <form method="post" action="/programs/{{ program.id }}/rebuild"><button class="btn sm" type="submit">Rebuild</button></form>
+  <form method="post" action="/programs/{{ program.id }}/rebuild">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button class="btn sm" type="submit">Rebuild</button></form>
 {% endblock %}
 
 {% block content %}
@@ -18,10 +31,47 @@
   </div>
   <ul class="stats">
     <li><strong>{{ targets|length }}</strong> targets</li>
+    <li><strong>{{ visible_entities }}</strong> entities{% if filter_active %} of {{ total_entities }}{% endif %}</li>
     <li><strong>{{ edge_count }}</strong> edges</li>
     <li><strong>{{ loose|length }}</strong> unattributed</li>
   </ul>
+  <form method="get" action="/programs/{{ program.id }}/graph" class="row">
+    <input type="search" name="q" value="{{ q }}" placeholder="Filter node values…">
+    <select name="node_type">
+      <option value="">All types</option>
+      {% for t in node_types %}
+      <option value="{{ t }}" {% if t == node_type %}selected{% endif %}>{{ t }}</option>
+      {% endfor %}
+    </select>
+    <button class="btn sm" type="submit">Filter</button>
+    {% if filter_active %}
+    <a class="btn ghost sm" href="/programs/{{ program.id }}/graph">Reset</a>
+    {% endif %}
+  </form>
 </section>
+
+{% if path_tree.roots %}
+<section class="card">
+  <h3 class="graph-target">URL path tree <span class="count">{{ path_tree.paths }}</span></h3>
+  <p class="muted">Observed URL/path/endpoint entities, grouped by host and path depth.</p>
+  <ul class="tree">
+    {% for root in path_tree.roots %}
+    <li>
+      <span class="mono">{{ root.host or "(unattributed)" }}</span>
+      <span class="count">{{ root.count }}</span>
+      {% if root.children %}
+      <ul>
+        {% for child in root.children %}{{ render_path(child) }}{% endfor %}
+      </ul>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% if path_tree.truncated %}
+  <p class="muted">Path tree capped at {{ path_tree.paths }} paths. Filter the graph to narrow it further.</p>
+  {% endif %}
+</section>
+{% endif %}
 
 <div id="graphCanvas"></div>
 <script>window.__CLUSTERS = {{ clusters|tojson }};</script>

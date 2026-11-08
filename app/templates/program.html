@@ -8,7 +8,8 @@
   <a class="btn ghost sm" href="/programs/{{ program.id }}/changes">Changes</a>
   <a class="btn ghost sm" href="/pipeline?program_id={{ program.id }}">Pipeline</a>
   <a class="btn ghost sm" href="/reports/{{ program.id }}/html">Report</a>
-  <form method="post" action="/programs/{{ program.id }}/rebuild"><button class="btn sm" type="submit">Rebuild</button></form>
+  <form method="post" action="/programs/{{ program.id }}/rebuild">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button class="btn sm" type="submit">Rebuild</button></form>
 {% endblock %}
 
 {% block content %}
@@ -42,6 +43,7 @@
       <details>
         <summary><strong>Edit program</strong></summary>
         <form method="post" action="/programs/{{ program.id }}/update" class="stack" style="margin-top:12px">
+          <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
           <label>Name<input name="name" value="{{ program.name }}"></label>
           <label>Platform<input name="platform" value="{{ program.platform or '' }}" placeholder="hackerone, bugcrowd…"></label>
           <div class="grid">
@@ -55,6 +57,7 @@
         </form>
         <form method="post" action="/programs/{{ program.id }}/delete" style="margin-top:10px"
               onsubmit="return confirm('Delete this program and all of its captures, entities and findings? This cannot be undone.')">
+          <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
           <button class="sm danger" type="submit">Delete program</button>
         </form>
       </details>
@@ -69,15 +72,22 @@
         <a href="/reports/{{ program.id }}/csv">csv</a> ·
         <a href="/reports/{{ program.id }}/h1">hackerone md</a> ·
         <a href="/reports/{{ program.id }}/sarif">sarif</a> ·
+        <a href="/reports/{{ program.id }}/pdf">pdf</a> ·
         <a href="/reports/{{ program.id }}/targets.txt" title="in-scope hosts for nuclei -l / httpx -l">targets.txt</a>
       </p>
-      <p class="dim">Secrets are masked in exports. Append <code>?reveal=1</code> for full values. Ignored and <em>false-positive</em> entities are excluded. SARIF is ready for GitHub code scanning / CI gates (<code>/api/v1/gate</code>).</p>
+      <p class="dim">Secrets are masked in exports. Append <code>?reveal=1</code> for full values. Ignored and <em>false-positive</em> entities are excluded. SARIF is ready for GitHub code scanning / CI gates (<code>/api/v1/gate</code>). Add <code>?include_triaged=1</code> for an internal report that keeps false positives.</p>
+      <form method="post" action="/programs/{{ program.id }}/snapshots/rebuild" class="row" style="margin-top:10px">
+        <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+        <button class="btn sm" type="submit">Rebuild history snapshots</button>
+        <span class="dim">Snapshots are rebuildable from the sealed evidence chain.</span>
+      </form>
     </section>
 
     <div class="grid">
       <section class="card">
         <h2>Targets <span class="count">{{ targets|length }}</span></h2>
         <form method="post" action="/programs/{{ program.id }}/targets" class="row" style="margin-bottom:12px">
+          <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
           <input name="name" placeholder="e.g. app.example.com or 10.0.0.0/24" required>
           <select name="kind">
             <option value="domain">domain</option>
@@ -91,12 +101,13 @@
         </form>
         {% if targets %}
         <table>
-          <thead><tr><th>Target</th><th>Kind</th><th></th></tr></thead>
+          <thead><tr><th>Target</th><th>Kind</th><th>History</th><th></th></tr></thead>
           <tbody>
             {% for t in targets %}
             <tr>
               <td>
                 <form method="post" action="/programs/{{ program.id }}/targets/{{ t.id }}/update" class="row compact">
+                  <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
                   <input name="name" value="{{ t.name }}" class="mono">
                   <select name="kind">
                     {% for k in ['domain','subdomain','ip','cidr','url','other'] %}
@@ -107,9 +118,11 @@
                 </form>
               </td>
               <td class="muted">{{ t.kind }}</td>
+              <td><a class="btn sm ghost" href="/targets/{{ t.id }}/history">timeline</a></td>
               <td>
                 <form method="post" action="/programs/{{ program.id }}/targets/{{ t.id }}/delete"
                       onsubmit="return confirm('Delete this target? Entities stay but become unattributed.')">
+                  <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
                   <button class="sm danger" type="submit">Delete</button>
                 </form>
               </td>
@@ -162,6 +175,7 @@
     <section class="card">
       <h2>New finding</h2>
       <form method="post" action="/programs/{{ program.id }}/findings" class="stack">
+        <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
         <div class="row">
           <input name="title" placeholder="finding title" required>
           <select name="severity">
@@ -193,29 +207,45 @@
             <td><span class="sev sev-{{ f.severity }}">{{ f.severity }}</span></td>
             <td>{{ f.title }}
               {% for t in (f.tags or []) %}<span class="chip tag">{{ t }}</span>{% endfor %}
+              {% if f.verdict and f.verdict != 'none' %}<span class="badge v-{{ f.verdict }}">{{ f.verdict }}</span>{% endif %}
               {% if f.description %}<div class="muted mono">{% for line in f.description.splitlines() %}{{ line }}<br>{% endfor %}</div>{% endif %}
               {% if f.notes %}<div class="entity-note">note: {{ f.notes }}</div>{% endif %}
             </td>
             <td>
-              <form method="post" action="/findings/{{ f.id }}/status" class="row status-form">
-                <select name="status">
-                  {% for s in ['open', 'in-progress', 'resolved', 'wont-fix'] %}
-                  <option value="{{ s }}" {% if f.status == s %}selected{% endif %}>{{ s }}</option>
+              <form method="post" action="/findings/{{ f.id }}/triage" class="row status-form">
+                <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+                <select name="triage_status">
+                  {% for s in ['open', 'acknowledged', 'false_positive'] %}
+                  <option value="{{ s }}" {% if triage_states.get(f.id) == s %}selected{% endif %}>{{ s.replace('_', ' ') }}</option>
                   {% endfor %}
                 </select>
-                <button class="sm" type="submit">set</button>
+                <button class="sm" type="submit">triage</button>
               </form>
+              <details class="inline-details">
+                <summary class="dim">workflow</summary>
+                <form method="post" action="/findings/{{ f.id }}/status" class="row status-form">
+                  <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+                  <select name="status">
+                    {% for s in ['open', 'in-progress', 'resolved', 'wont-fix'] %}
+                    <option value="{{ s }}" {% if f.status == s %}selected{% endif %}>{{ s }}</option>
+                    {% endfor %}
+                  </select>
+                  <button class="sm" type="submit">set</button>
+                </form>
+              </details>
             </td>
             <td class="actions">
               <details class="inline-details">
                 <summary>annotate</summary>
                 <form method="post" action="/findings/{{ f.id }}/annotate" class="stack">
+                  <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
                   <input name="tags" value="{{ (f.tags or [])|join(', ') }}" placeholder="tags">
                   <input name="notes" value="{{ f.notes or '' }}" placeholder="private note">
                   <button class="sm" type="submit">save</button>
                 </form>
               </details>
-              <form method="post" action="/findings/{{ f.id }}/delete" data-confirm="Delete finding '{{ f.title }}'?"><button class="danger" type="submit">delete</button></form>
+              <form method="post" action="/findings/{{ f.id }}/delete" data-confirm="Delete finding '{{ f.title }}'?">
+                <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button class="danger" type="submit">delete</button></form>
             </td>
           </tr>
           {% endfor %}
@@ -230,6 +260,7 @@
       <div class="spread">
         <h2>AI summary</h2>
         <form method="post" action="/programs/{{ program.id }}/analyze" data-ai>
+          <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
           <button class="primary" type="submit" data-label="{{ 'Refresh summary' if program.ai_summary else 'Summarize with AI' }}">
             {{ 'Refresh summary' if program.ai_summary else 'Summarize with AI' }}
           </button>

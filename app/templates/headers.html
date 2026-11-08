@@ -6,7 +6,9 @@
 <section class="card">
   <h2>New profile</h2>
   <p class="muted">Pick a family (OS × browser × device) for a randomized realistic set, then add custom overrides. Attach profiles to scan jobs so executors send them — or copy the curl flags for manual testing.</p>
+  <p class="muted">Header values and proxy credentials are encrypted at rest. This page and the API still show them locally so the curl-copy workflow works; protect the key file next to the database.</p>
   <form method="post" action="/headers" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
     <div class="row">
       <input name="name" placeholder="profile name (e.g. chrome-win)" required>
       <select name="family">
@@ -34,8 +36,10 @@
   <div class="spread">
     <h2>{{ p.name }} <span class="chip">{{ families.get(p.family, [p.family])[0] }}</span></h2>
     <div class="row" style="flex:0 0 auto">
-      <form method="post" action="/headers/{{ p.id }}/randomize"><button class="sm" type="submit">Randomize</button></form>
-      <form method="post" action="/headers/{{ p.id }}/delete" data-confirm="Delete header profile '{{ p.name }}'?"><button class="danger" type="submit">delete</button></form>
+      <form method="post" action="/headers/{{ p.id }}/randomize">
+        <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button class="sm" type="submit">Randomize</button></form>
+      <form method="post" action="/headers/{{ p.id }}/delete" data-confirm="Delete header profile '{{ p.name }}'?">
+        <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button class="danger" type="submit">delete</button></form>
     </div>
   </div>
   {% set used = usage.get(p.id, []) %}
@@ -63,6 +67,7 @@
     <button class="copy" data-copy="curl {% if p.proxy %}-x '{{ p.proxy }}' {% endif %}{% for k, v in (p.headers or {}).items() %}-H '{{ k }}: {{ v }}' {% endfor %}URL" title="Copy curl flags">⧉ copy flags</button>
   </p>
   <form method="post" action="/headers/{{ p.id }}/egress" class="row">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
     <label class="field grow">Proxy / egress
       <input name="proxy" class="mono" value="{{ p.proxy or '' }}" placeholder="http://127.0.0.1:8080 or socks5://127.0.0.1:9050">
     </label>

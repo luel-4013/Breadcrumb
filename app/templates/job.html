@@ -1,29 +1,89 @@
 {% extends "base.html" %}
+{% set imported = (job.params or {}).get('imported') %}
 {% block title %}Job #{{ job.id }} · Breadcrumb{% endblock %}
 {% block crumb %}Runners <span class="sep">/</span> <span class="sub">job #{{ job.id }}</span>{% endblock %}
 
 {% block actions %}
-  {% if job.status in ['queued', 'running'] %}
-  <form method="post" action="/jobs/{{ job.id }}/cancel"><button class="btn sm" type="submit">Cancel</button></form>
-  {% else %}
-  <form method="post" action="/jobs/{{ job.id }}/retry"><button class="btn sm" type="submit">Retry</button></form>
+  {% if native and not imported and job.status in ['queued', 'failed', 'cancelled'] %}
+  <form method="post" action="/jobs/{{ job.id }}/run">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button class="primary sm" type="submit">Run now</button></form>
   {% endif %}
-  <form method="post" action="/jobs/{{ job.id }}/delete" data-confirm="Delete job #{{ job.id }}?"><button class="btn ghost sm" type="submit">Delete</button></form>
+  {% if job.status in ['queued', 'running'] %}
+  <form method="post" action="/jobs/{{ job.id }}/cancel">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button class="btn sm" type="submit">Cancel</button></form>
+  {% elif not imported %}
+  <form method="post" action="/jobs/{{ job.id }}/retry">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button class="btn sm" type="submit">Retry</button></form>
+  {% endif %}
+  {% if snapshot and snapshot.status == 'ready' %}
+  <a class="btn ghost sm" href="/jobs/{{ job.id }}/report.pdf">PDF report</a>
+  {% endif %}
+  {% if target %}
+  <a class="btn ghost sm" href="/targets/{{ target.id }}/history">History</a>
+  {% endif %}
+  <form method="post" action="/jobs/{{ job.id }}/delete" data-confirm="Delete job #{{ job.id }}?">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button class="btn ghost sm" type="submit">Delete</button></form>
 {% endblock %}
 
 {% block content %}
+{% if request.query_params.get('msg') %}<div class="warn-box">{{ request.query_params.get('msg') }}</div>{% endif %}
+{% if imported %}<div class="warn-box">This is an imported Leadline scan. It is read-only history: it cannot be claimed, retried, or re-run. Queue a new scan to refresh the target.</div>{% endif %}
 <div class="tiles">
   <div class="tile"><span class="k">Status</span><span class="v"><span class="badge st-{{ job.status }}">{{ job.status }}</span></span><span class="d">{{ job.runner }}</span></div>
   <div class="tile"><span class="k">Target</span><span class="v mono" style="font-size:1rem">{{ job.target or '—' }}</span><span class="d">{{ runner.label if runner else job.runner }}</span></div>
   <div class="tile"><span class="k">Program</span><span class="v">{{ program.name if program else '—' }}</span><span class="d">{{ 'attached' if program else 'unattached' }}</span></div>
+  <div class="tile"><span class="k">Attempts</span><span class="v">{{ job.attempts }} / {{ job.max_attempts }}</span><span class="d">{{ 'imported history' if imported else ('external adapter' if adapter else ('native collector' if native else 'external runner')) }}</span></div>
   <div class="tile"><span class="k">Headers</span><span class="v" style="font-size:1rem">{{ profile.name if profile else 'default' }}</span><span class="d">{{ profile.proxy if profile and profile.proxy else 'direct connection' }}</span></div>
 </div>
 
+{% if native %}
+<section class="card">
+  <h2>{{ 'External tool adapter' if adapter else 'Native collector' }}</h2>
+  {% if adapter %}
+  <p class="muted">
+    This runner spawns an external tool in its own process group. The target is
+    preflighted against the program's scope before the process starts (private
+    targets warn; metadata and link-local addresses are always blocked). The
+    tool resolves names itself, so the UI records the adapter's scope mode:
+    <span class="chip mono">{{ runner.scope_mode if runner else 'preflight_only' }}</span>.
+    Output is capped, cancellation kills the whole process group, and each
+    phase is sealed into the evidence chain. Install the binary on the executor
+    host; a missing binary is reported as <strong>not installed</strong>.
+  </p>
+  {% else %}
+  <p class="muted">
+    This runner executes inside Breadcrumb. Every connection is checked against
+    the program's scope first (private/loopback targets warn; metadata and
+    link-local addresses are always blocked), and each phase output is sealed
+    into the evidence chain with an idempotency key.
+  </p>
+  {% endif %}
+  {% if job.status == 'queued' %}
+  <p class="muted">Run it now with the button above, or start the durable worker:</p>
+  <pre class="raw">breadcrumb worker --once</pre>
+  <pre class="raw">breadcrumb worker --poll 2 --lease 120</pre>
+  {% if adapter %}<p class="muted">The worker only claims adapter jobs when <code>BREADCRUMB_EXTERNAL_TOOLS=1</code>.</p>{% endif %}
+  {% elif job.status == 'running' %}
+  <p class="muted">The worker is executing this job. Cancel sets a cooperative flag and the collector stops at its next checkpoint.</p>
+  {% else %}
+  <p class="muted">The executor is off by default. Re-run this job with <strong>Run now</strong>, or use <code>breadcrumb worker</code> for a durable loop.</p>
+  {% endif %}
+  {% if job.params %}
+  <h3>Parameters</h3>
+  <pre class="raw">{{ job.params | tojson(indent=2) }}</pre>
+  {% endif %}
+  {% if profile %}
+  <h3>Request profile</h3>
+  <p class="muted mono">{{ profile.user_agent }}</p>
+  {% if profile.proxy %}<p class="muted">proxy <span class="mono">{{ profile.proxy }}</span>{% if profile.rate_limit %} · rate limit {{ profile.rate_limit }}/s{% endif %}</p>{% endif %}
+  {% endif %}
+</section>
+{% else %}
 <section class="card">
   <h2>How to run this job</h2>
   <p class="muted">
-    Breadcrumb is import-first; no executor is bundled. Run the tool wherever your
-    tooling lives, then pipe the output back.
+    This runner is external. Run the tool wherever your tooling lives, then
+    pipe the output back into Breadcrumb's ingest path.
   </p>
   <ol class="muted">
     <li>Mark it running: <code>POST /api/v1/jobs/{{ job.id }}/status</code> with <code>status: running</code></li>
@@ -42,10 +102,106 @@
   <pre class="raw">{{ curl }}{% if job.target %} {{ job.target }}{% endif %}</pre>
   {% endif %}
 </section>
+{% endif %}
+
+{% if snapshot %}
+{% set snap = snapshot.data or {} %}
+<section class="card">
+  <div class="spread">
+    <h2>History snapshot</h2>
+    <span class="badge st-{{ 'done' if snapshot.status == 'ready' else 'queued' }}">{{ snapshot.status }}</span>
+  </div>
+  {% if snapshot.status == 'ready' %}
+  <div class="tiles">
+    <div class="tile"><span class="k">Risk</span><span class="v">{{ snap.risk_level or snapshot.risk_level }}</span><span class="d">{{ snap.risk_score if snap.risk_score is not none else snapshot.risk_score }}/100</span></div>
+    <div class="tile"><span class="k">Findings</span><span class="v">{{ snapshot.finding_count }}</span><span class="d">{{ snap.total_finding_count or snapshot.finding_count }} including triaged</span></div>
+    <div class="tile"><span class="k">CVEs</span><span class="v">{{ snap.verified_cves or 0 }}</span><span class="d">{{ snap.unverified_cves or 0 }} unverified candidate(s)</span></div>
+    <div class="tile"><span class="k">Surface</span><span class="v">{{ snap.ports|length if snap.ports else 0 }}</span><span class="d">ports · {{ snap.subdomains|length if snap.subdomains else 0 }} subdomains · {{ snap.endpoints|length if snap.endpoints else 0 }} endpoints</span></div>
+  </div>
+  <p class="muted">
+    Snapshot of the target state when this scan finished. False positives and
+    unverified CVE candidates do not contribute to the risk score.
+    {% if target %}<a href="/targets/{{ target.id }}/history">View timeline &amp; diffs</a>{% endif %}
+    · <a href="/jobs/{{ job.id }}/report.pdf">Download PDF report</a>
+  </p>
+  {% else %}
+  <p class="muted">The snapshot is {{ snapshot.status }}{% if snapshot.error %}: <span class="warn-text">{{ snapshot.error }}</span>{% endif %}.</p>
+  <p class="dim">Evidence is intact. Rebuild the snapshot from the sealed captures:</p>
+  {% endif %}
+  <form method="post" action="/jobs/{{ job.id }}/snapshot/rebuild">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+    <button class="btn sm" type="submit">Rebuild snapshot</button>
+  </form>
+</section>
+{% endif %}
+
+{% if phases %}
+<section class="card">
+  <div class="spread">
+    <h2>Phases <span class="count">{{ phases|length }}</span></h2>
+  </div>
+  <table>
+    <thead><tr><th>#</th><th>Phase</th><th>Status</th><th>Capture</th><th>Entities</th><th>Findings</th><th>Started</th></tr></thead>
+    <tbody>
+      {% for p in phases %}
+      <tr>
+        <td class="muted">{{ p.seq }}</td>
+        <td><span class="chip mono">{{ p.name }}</span>{% if p.error %}<div class="warn-text">{{ p.error }}</div>{% endif %}</td>
+        <td><span class="badge st-{{ p.status }}">{{ p.status }}</span></td>
+        <td>{% if p.output_paste_id %}<a href="/pastes/{{ p.output_paste_id }}">#{{ p.output_paste_id }}</a>{% else %}<span class="dim">—</span>{% endif %}</td>
+        <td class="muted">{{ p.stats.get('entities', '—') if p.stats else '—' }}</td>
+        <td class="muted">{{ p.stats.get('findings', '—') if p.stats else '—' }}</td>
+        <td class="muted">{{ p.started_at.strftime('%Y-%m-%d %H:%M:%S UTC') if p.started_at else '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{% if attempts %}
+<section class="card">
+  <h2>Attempts <span class="count">{{ attempts|length }}</span></h2>
+  <table>
+    <thead><tr><th>#</th><th>Worker</th><th>Status</th><th>Started</th><th>Finished</th><th>Error</th></tr></thead>
+    <tbody>
+      {% for a in attempts %}
+      <tr>
+        <td class="muted">{{ a.attempt_no }}</td>
+        <td><span class="mono dim">{{ a.worker_id }}</span></td>
+        <td><span class="badge st-{{ a.status }}">{{ a.status }}</span></td>
+        <td class="muted">{{ a.started_at.strftime('%Y-%m-%d %H:%M:%S UTC') if a.started_at else '—' }}</td>
+        <td class="muted">{{ a.finished_at.strftime('%Y-%m-%d %H:%M:%S UTC') if a.finished_at else '—' }}</td>
+        <td class="muted">{% if a.error %}<span class="warn-text">{{ a.error }}</span>{% else %}—{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Events</h2>
+  {% if events %}
+  <table>
+    <thead><tr><th>When</th><th>Kind</th><th>Message</th></tr></thead>
+    <tbody>
+      {% for e in events[-100:] %}
+      <tr>
+        <td class="muted">{{ e.created_at.strftime('%Y-%m-%d %H:%M:%S UTC') if e.created_at else '—' }}</td>
+        <td><span class="chip mono">{{ e.kind }}</span></td>
+        <td class="muted">{{ e.message }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="empty">No events yet.</p>{% endif %}
+</section>
 
 <section class="card">
   <h2>Log</h2>
   {% if job.log %}<pre class="raw">{{ job.log }}</pre>{% else %}<p class="empty">No log output yet.</p>{% endif %}
+  {% if job.error %}<p class="warn-text">{{ job.error }}</p>{% endif %}
   <p class="dim">
     queued {{ job.created_at.strftime('%Y-%m-%d %H:%M UTC') if job.created_at else '—' }}
     {% if job.started_at %} · started {{ job.started_at.strftime('%Y-%m-%d %H:%M UTC') }}{% endif %}

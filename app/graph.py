@@ -21,6 +21,7 @@ references   generic "mentions" link
 
 import ipaddress
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 from .scope import host_of
 
@@ -54,6 +55,9 @@ EDGE_LABELS = {
 
 HOST_TYPES = {"domain", "subdomain", "wildcard", "ip"}
 PARENT_TYPES = {"subdomain", "domain", "wildcard"}
+PATH_ENTITY_TYPES = {"url", "endpoint", "path"}
+MAX_PATH_TREE_NODES = 500
+MAX_PATH_DEPTH = 12
 
 
 @dataclass
@@ -75,6 +79,89 @@ def parent_hosts(host: str) -> list[str]:
     if all(part.isdigit() for part in parts):
         return []
     return [".".join(parts[i:]) for i in range(1, len(parts) - 1)]
+
+
+def _path_of(entity) -> tuple[str, str]:
+    """Return (host, path) for a URL/path/endpoint entity."""
+    value = str(getattr(entity, "value", "") or "").strip()
+    if not value:
+        return "", ""
+    meta = getattr(entity, "meta", None) or {}
+    if "://" in value:
+        try:
+            parsed = urlsplit(value)
+        except ValueError:
+            return "", ""
+        return (parsed.hostname or "").lower(), parsed.path or "/"
+    if value.startswith("/"):
+        return str(meta.get("host") or "").lower(), value
+    return "", ""
+
+
+def path_tree(entities, limit: int = MAX_PATH_TREE_NODES) -> dict:
+    """Build a per-host URL path tree for the graph view.
+
+    Breadcrumb's entity graph is good at answering "what is connected to what";
+    this tree answers "how deep did recon get on this host". Only observed
+    URL/path/endpoint entities are used. The node count is capped so a large
+    target cannot make the page unrenderable.
+    """
+    paths_by_host: dict[str, set[str]] = {}
+    for entity in entities or []:
+        if getattr(entity, "type", "") not in PATH_ENTITY_TYPES:
+            continue
+        host, path = _path_of(entity)
+        if not path:
+            continue
+        paths_by_host.setdefault(host, set()).add(path or "/")
+
+    total = 0
+    truncated = False
+    roots: list[dict] = []
+    for host in sorted(paths_by_host):
+        root = {"label": "/", "path": "/", "count": 0, "children": {}}
+        for path in sorted(paths_by_host[host]):
+            if total >= limit:
+                truncated = True
+                break
+            total += 1
+            root["count"] += 1
+            node = root
+            parts = [part for part in path.split("/") if part][:MAX_PATH_DEPTH]
+            current_path = ""
+            for part in parts:
+                current_path += "/" + part
+                child = node["children"].setdefault(
+                    part,
+                    {"label": part, "path": current_path, "count": 0, "children": {}},
+                )
+                child["count"] += 1
+                node = child
+        if root["count"]:
+            roots.append({"host": host, **_freeze_tree(root)})
+        if total >= limit:
+            truncated = True
+            break
+
+    return {
+        "roots": roots,
+        "hosts": len(roots),
+        "paths": total,
+        "truncated": truncated,
+    }
+
+
+def _freeze_tree(node: dict) -> dict:
+    children = [
+        _freeze_tree(child)
+        for child in sorted(node.get("children", {}).values(), key=lambda item: item["label"])
+    ]
+    return {
+        "label": node["label"],
+        "path": node["path"],
+        "count": node["count"],
+        "children": children,
+    }
 
 
 class GraphIndex:

@@ -41,6 +41,7 @@
       </div>
       {% endif %}
       <form method="post" action="/pastes/{{ paste.id }}/assign" class="row">
+        <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
         <select name="program_id">
           <option value="">(unassigned)</option>
           {% for p in programs %}<option value="{{ p.id }}" {% if paste.program_id == p.id %}selected{% endif %}>{{ p.name }}</option>{% endfor %}
@@ -74,6 +75,7 @@
       <div class="spread">
         <h2>AI analysis</h2>
         <form method="post" action="/pastes/{{ paste.id }}/analyze" data-ai>
+          <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
           <button class="primary" type="submit" data-label="{{ 'Re-analyze' if paste.ai_analysis else 'Analyze with AI' }}">
             {{ 'Re-analyze' if paste.ai_analysis else 'Analyze with AI' }}
           </button>
