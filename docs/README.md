@@ -1,7 +1,8 @@
 # Breadcrumb + Leadline planning documents
 
-Status: **planning complete; Phases 0–8 implemented, verified and released as
-`0.4.0` (2026-11-08).**
+Status: **planning and release complete; Phases 0–8 implemented, verified and
+released as `0.4.0` (2026-11-08). Post-release competitive research and flagship
+planning are complete as docs only; no application code changed.**
 Included: durable job queue/worker, scope guard, encrypted-at-rest
 header-profile secrets, the twelve-phase `leadline-recon` preset (DNS, host
 intel, ports/TLS, HTTP, tech, JS, params, headers, API, vuln candidates, CVE
@@ -14,6 +15,10 @@ with dry-run, resume manifest, verification and an acceptance script.
 Phase 8 is closed: importer, real-data verification, merge guide, compatibility
 API, security model, hardware/AI guide, troubleshooting, backup/restore/upgrade
 runbook, security checklist, release notes and rollback plan are present.
+Post-release research (2026-11-08) studied 19 external projects plus the
+Leadline baseline, recorded 20 success/failure reasons per project, and produced
+a flagship plan for the evidence-first recon notebook. It is planning only: the
+`v0.4.0` tag and all application code are untouched.
 Date: 2026-10-27 to 2026-11-08
 Repos inspected:
 
@@ -189,6 +194,18 @@ Operational documents for the merged system:
 15. **[ROLLBACK_PLAN.md](ROLLBACK_PLAN.md)** — rollback levels from disabling
     the executor through restoring a pre-migration database or falling back to
     Leadline.
+
+Post-release research and flagship planning:
+
+16. **[COMPETITIVE_RESEARCH_2026-11-08.md](COMPETITIVE_RESEARCH_2026-11-08.md)**
+    — 19 external projects plus the Leadline baseline, 20 success/failure
+    reasons each, architecture/workflow, feature demand, anti-features,
+    requested improvements, source log and failed-lookup log.
+17. **[FLAGSHIP_PLAN_2026-11-08.md](FLAGSHIP_PLAN_2026-11-08.md)** — the
+    evidence-first notebook thesis, competitive position, gap-to-plan
+    traceability, Phases A–F, acceptance criteria, metrics, security/privacy,
+    pre-mortem and the go/no-go recommendation. Planning only; implementation
+    is pending owner approval.
 
 ## One-paragraph summary
 

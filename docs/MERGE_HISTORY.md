@@ -22,6 +22,77 @@ Status vocabulary follows the planning documents:
 
 ---
 
+## 2026-11-09 — Post-release research and flagship plan (docs only)
+
+### Scope
+
+After the 0.4.0 release, study at least 17 comparable recon/security projects,
+reverse-engineer why each succeeded or failed, synthesize requested, rejected
+and improvement features, and turn the findings into a flagship plan for
+Breadcrumb. Planning only: no application code changed and the `v0.4.0` tag on
+`4b0066d` was left intact.
+
+### Research
+
+- **Coverage:** 19 external projects plus the Leadline baseline = 20 profiles.
+  External set: reNgine, reconFTW, Osmedeus, BBOT, OWASP Amass, SpiderFoot,
+  theHarvester, Sn1per, Recon-ng, IntelOwl, Faraday, DefectDojo, Dradis,
+  Ghostwriter, Reconmap, Sn0int, Legion, Axiom and EyeWitness.
+- **Per project:** architecture/workflow, unique value, 10 success reasons,
+  10 failure/risk reasons, most-requested features, unwanted friction,
+  requested improvements and the Breadcrumb lesson.
+- **Sources:** GitHub REST metadata, raw READMEs, release Atom feeds, issue
+  search (top 30 by comments per repo, ~570 issue records), Hacker News Algolia
+  and the local Breadcrumb/Leadline code and docs. Reddit JSON was blocked by
+  an HTML challenge and web search was unavailable; both were routed around
+  with primary GitHub sources and HN Algolia.
+- **Output:** `docs/COMPETITIVE_RESEARCH_2026-11-08.md` (~100 KB) with the
+  cross-project synthesis, feature-demand matrix, anti-feature list, source
+  appendix, limitations and failed-lookup log.
+
+### Flagship plan
+
+- **Thesis:** Breadcrumb should stay the **evidence-first recon notebook** —
+  import anything, remember everything across programs, prove what changed,
+  report locally, keep the scanner optional. Do not become a scanner clone, a
+  vulnerability-management platform or a multi-tenant SaaS.
+- **Pillars:** Ingest anything, remember everything, prove everything,
+  understand quickly, report locally.
+- **Phases:** A “Proof” (parser contract, evidence manifest, `breadcrumb
+  doctor`, onboarding, 10k/100k benchmarks), B “Memory” (Ledger v2, diff v2,
+  scope v2), C “Report” (templates, redaction, review bundle, integration
+  exports), D “Automate” (scheduled re-import, parser SDK, OpenAPI,
+  performance), E “Capture” (screenshot import, optional), F “Flagship”
+  (security review, migration, docs, 1.0 release gate).
+- **Recommendation:** **Go, with guardrails.** Start with Phase A and ship
+  `0.5.0` “Proof”; only continue to B–F after the Phase A acceptance criteria
+  and benchmarks pass.
+- **Explicit non-goals:** cloud/distributed scanning, exploitation, full
+  vulnerability/ticketing management, multi-tenant SaaS/SSO/RBAC in the core,
+  a remote plugin marketplace, autonomous AI agents, and browser automation as
+  a default dependency.
+- **Output:** `docs/FLAGSHIP_PLAN_2026-11-08.md` with the competitive position,
+  gap-to-plan traceability, acceptance criteria, metrics, security/privacy
+  review, pre-mortem, decision log and go/no-go recommendation.
+
+### Verification
+
+- 20/20 profiles contain exactly 10 success and 10 failure reasons (checked by
+  script).
+- The two research/plan documents are linked from `docs/README.md`.
+- Documentation-only change set; no application code, schema or release tag
+  changed.
+- The full test suite remains at the 0.4.0 baseline (182 passed, 1 warning);
+  it was not re-run for a docs-only change.
+
+### Decision
+
+Research complete; implementation approval pending. The next step is the
+owner’s answer to the first-slice question (Phase A vs. a different priority),
+then a Phase A specification.
+
+---
+
 ## 2026-11-08 — Phase 8: Leadline importer, verification and hardening
 
 ### Scope
