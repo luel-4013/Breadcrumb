@@ -10,6 +10,33 @@ curl -s http://127.0.0.1:8787/health
 It reports the version, schema version, DB path, WAL mode, maintenance flag,
 job counts and expired leases.
 
+Run the read-only diagnostic first when anything feels wrong:
+
+```bash
+python -m app.cli doctor
+python -m app.cli doctor --json
+```
+
+It checks Python, SQLite, the database directory/disk, integrity, WAL mode,
+schema version, key file, port, parser registry and optional tools, and prints
+a copy-paste `fix` for every failure.
+
+---
+
+## 0. An import produced zero entities
+
+1. Run `python -m app.cli ingest <file> --dry-run`. If `parsers` is empty, the
+   input is not a recognized format (often an HTML error page, gzip data, or a
+   changed tool version).
+2. If a parser matched, read `issues` in the dry-run output or at
+   `/api/v1/pastes/<id>/report`. `skipped_row` names the malformed line;
+   `exception` means the parser hit a bug and the capture was still sealed with
+   the error attached.
+3. `completeness < 100%` means the import was partial. Do not trust a report or
+   Ledger entry built from it until you re-import a clean artifact.
+4. See [IMPORT_COOKBOOK.md](IMPORT_COOKBOOK.md) for format-specific commands
+   and the parser contract.
+
 ---
 
 ## 1. The app will not start or rejects requests

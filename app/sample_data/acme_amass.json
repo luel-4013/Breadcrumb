@@ -1,0 +1,6 @@
+[
+  {"name":"demo.breadcrumb.test","domain":"breadcrumb.test","tag":"cert","sources":["crtsh"],"addresses":[{"ip":"192.0.2.10","cidr":"192.0.2.0/24"}]},
+  {"name":"app.demo.breadcrumb.test","domain":"breadcrumb.test","tag":"dns","sources":["crtsh","amass"],"addresses":[{"ip":"192.0.2.10","cidr":"192.0.2.0/24"}]},
+  {"name":"api.demo.breadcrumb.test","domain":"breadcrumb.test","tag":"dns","sources":["crtsh"],"addresses":[{"ip":"192.0.2.11","cidr":"192.0.2.0/24"}]},
+  {"name":"staging.demo.breadcrumb.test","domain":"breadcrumb.test","tag":"dns","sources":["crtsh"],"addresses":[{"ip":"192.0.2.12","cidr":"192.0.2.0/24"}]}
+]

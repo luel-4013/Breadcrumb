@@ -1,0 +1,15 @@
+{"type":"DNS_NAME","data":"demo.breadcrumb.test","scope_description":["in-scope"],"resolved_hosts":["192.0.2.10"]}
+{"type":"DNS_NAME","data":"app.demo.breadcrumb.test","scope_description":["in-scope"],"resolved_hosts":["192.0.2.10"]}
+{"type":"DNS_NAME","data":"api.demo.breadcrumb.test","scope_description":["in-scope"],"resolved_hosts":["192.0.2.11"]}
+{"type":"DNS_NAME","data":"staging.demo.breadcrumb.test","scope_description":["in-scope"],"resolved_hosts":["192.0.2.12"]}
+{"type":"IP_ADDRESS","data":"192.0.2.10","scope_description":["in-scope"]}
+{"type":"IP_ADDRESS","data":"192.0.2.11","scope_description":["in-scope"]}
+{"type":"OPEN_TCP_PORT","data":"app.demo.breadcrumb.test:443","scope_description":["in-scope"]}
+{"type":"OPEN_TCP_PORT","data":"app.demo.breadcrumb.test:22","scope_description":["in-scope"]}
+{"type":"URL","data":"https://app.demo.breadcrumb.test/login","scope_description":["in-scope"]}
+{"type":"HTTP_RESPONSE","data":"https://app.demo.breadcrumb.test/login","status_code":200,"title":"Acme Demo Login","webserver":"nginx/1.24.0","scope_description":["in-scope"]}
+{"type":"TECHNOLOGY","data":"React","host":"app.demo.breadcrumb.test","scope_description":["in-scope"]}
+{"type":"TECHNOLOGY","data":"nginx","host":"app.demo.breadcrumb.test","scope_description":["in-scope"]}
+{"type":"EMAIL_ADDRESS","data":"security@demo.breadcrumb.test","scope_description":["in-scope"]}
+{"type":"FINDING","data":"Directory listing enabled on /static/","severity":"medium","host":"app.demo.breadcrumb.test","url":"https://app.demo.breadcrumb.test/static/","description":"The static directory returns an HTML index.","scope_description":["in-scope"]}
+{"type":"VULNERABILITY","data":"Outdated nginx version","severity":"low","host":"app.demo.breadcrumb.test","url":"https://app.demo.breadcrumb.test","description":"nginx 1.24.0 is behind the current stable release.","scope_description":["in-scope"]}

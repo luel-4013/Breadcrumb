@@ -42,23 +42,192 @@ def cmd_serve(args) -> int:
 
 
 def cmd_ingest(args) -> int:
-    from .main import _ingest
+    from .ingest import IngestRequest, import_report, ingest
+    from .parsers import analyze_detailed
 
     init_db()
     text = _read_input(args.file)
     if not text.strip():
         print("empty input", file=sys.stderr)
         return 2
+
+    if args.dry_run:
+        analysis = analyze_detailed(text)
+        report = {
+            "dry_run": True,
+            "parsers": analysis.parsers,
+            "parser_versions": analysis.parser_versions,
+            "entities": len(analysis.entities),
+            "relationships": len(analysis.relationships),
+            "findings": len(analysis.findings),
+            "skipped_rows": analysis.skipped_rows,
+            "completeness": analysis.completeness,
+            "issues": [issue.as_dict() for issue in analysis.issues],
+            "warning": "no entities detected" if not analysis.entities else "",
+        }
+        print(json.dumps(report, indent=2, default=str))
+        return 0
+
+    source_meta = {}
+    if args.source_meta:
+        try:
+            source_meta = json.loads(args.source_meta)
+        except ValueError as exc:
+            print(f"ingest: --source-meta must be JSON: {exc}", file=sys.stderr)
+            return 2
     with Session(engine) as session:
-        paste = _ingest(session, text, args.program, args.target, args.source)
-        count = session.exec(
-            select(Entity).where(Entity.paste_id == paste.id)
-        ).all()
-        print(
-            f"capture #{paste.id}: {len(count)} entities via "
-            f"{', '.join(paste.parsers or ['?'])}"
-            + (f" ({len(paste.parse_errors)} parser issue(s))" if paste.parse_errors else "")
+        result = ingest(
+            session,
+            IngestRequest(
+                text=text,
+                program_id=args.program,
+                target_id=args.target,
+                source=args.source,
+                command=args.command or None,
+                source_meta=source_meta,
+                max_entities=max(1, args.max_entities),
+            ),
         )
+        report = import_report(session, result.paste)
+        if args.report_json:
+            payload = json.dumps(report, indent=2, default=str)
+            if args.report_json == "-":
+                print(payload)
+            else:
+                path = Path(args.report_json).expanduser()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(payload + "\n", encoding="utf-8")
+                print(f"wrote {path}")
+        if args.json:
+            print(json.dumps(report, indent=2, default=str))
+            return 0
+        print(
+            f"capture #{result.paste.id}: {result.entities} entities via "
+            f"{', '.join(result.paste.parsers or ['?'])}"
+            + (
+                f" · {result.findings} finding(s)"
+                if result.findings
+                else ""
+            )
+            + (
+                f" · completeness {result.completeness:.0%}"
+                if result.completeness < 1.0
+                else ""
+            )
+            + (
+                f" ({len(result.parse_errors)} parser issue(s))"
+                if result.parse_errors
+                else ""
+            )
+        )
+    return 0
+
+
+def cmd_doctor(args) -> int:
+    """Diagnose Python, SQLite, paths, keys, port, parsers and optional tools."""
+    from .doctor import format_report, run_checks
+
+    report = run_checks()
+    if args.json:
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        print(format_report(report))
+    return 0 if report.get("ok") else 1
+
+
+def cmd_manifest(args) -> int:
+    """Export a portable evidence manifest for one capture."""
+    from .manifest import build_manifest, manifest_json, manifest_markdown
+    from .models import Paste
+
+    init_db()
+    with Session(engine) as session:
+        paste = session.get(Paste, args.paste_id)
+        if paste is None:
+            print(f"manifest: capture #{args.paste_id} not found", file=sys.stderr)
+            return 1
+        manifest = build_manifest(session, paste, redact=not args.reveal)
+        text = (
+            manifest_json(manifest)
+            if args.format == "json"
+            else manifest_markdown(manifest)
+        )
+        if args.output:
+            path = Path(args.output).expanduser()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+            print(f"wrote {path}")
+        else:
+            sys.stdout.write(text)
+    return 0
+
+
+def cmd_verify(args) -> int:
+    """Verify a manifest offline, one capture, or the whole hash chain."""
+    from .evidence import verify_chain
+    from .manifest import verify_manifest_data, verify_paste_manifest
+    from .models import Paste
+
+    init_db()
+    if args.manifest:
+        path = Path(args.manifest).expanduser()
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"verify: could not read manifest: {exc}", file=sys.stderr)
+            return 2
+        raw = None
+        if args.raw:
+            raw = Path(args.raw).expanduser().read_text(encoding="utf-8", errors="replace")
+        result = verify_manifest_data(manifest, raw=raw)
+        result["manifest"] = str(path)
+    elif args.paste_id:
+        with Session(engine) as session:
+            paste = session.get(Paste, args.paste_id)
+            if paste is None:
+                print(f"verify: capture #{args.paste_id} not found", file=sys.stderr)
+                return 1
+            result = verify_paste_manifest(session, paste)
+    else:
+        with Session(engine) as session:
+            result = verify_chain(session)
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        print(f"verification: {'OK' if result.get('valid') else 'FAILED'}")
+        for check in result.get("checks", []):
+            print(
+                f"  {'PASS' if check['ok'] else 'FAIL'} {check['name']}: "
+                f"{check.get('detail', '')}"
+            )
+        if "checks" not in result:
+            for key, value in result.items():
+                print(f"  {key}: {value}")
+    return 0 if result.get("valid") else 1
+
+
+def cmd_demo(args) -> int:
+    """Create the sample program and print the first-report URLs."""
+    from .demo import run_demo
+
+    init_db()
+    with Session(engine) as session:
+        result = run_demo(session)
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+        return 0
+    print(f"demo program: #{result['program_id']} {result['program_name']}")
+    for capture in result["captures"]:
+        dup = " (reused)" if capture["duplicate"] else ""
+        print(
+            f"  capture #{capture['paste_id']} {capture['file']}: "
+            f"{capture.get('parsed_entities', capture['entities'])} parsed entities, "
+            f"{capture['findings']} finding(s), "
+            f"completeness {capture['completeness']:.0%}{dup}"
+        )
+    print(f"entities: {result['entities']}  findings: {result['findings']}")
+    print(f"report:   {result['report_url']}")
+    print(f"manifest: {result['manifest_url']}")
     return 0
 
 
@@ -916,7 +1085,35 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--program", type=int, default=None)
     p.add_argument("--target", type=int, default=None)
     p.add_argument("--source", default="cli")
+    p.add_argument("--command", default="", help="command that produced this artifact (redacted in manifests)")
+    p.add_argument("--source-meta", default="", help="non-secret provenance as a JSON object")
+    p.add_argument("--max-entities", type=int, default=25000)
+    p.add_argument("--report-json", default="", help="write the import report (or - for stdout)")
+    p.add_argument("--json", action="store_true", help="print the import report as JSON")
+    p.add_argument("--dry-run", action="store_true", help="parse and report without writing")
     p.set_defaults(func=cmd_ingest)
+
+    p = sub.add_parser("doctor", help="diagnose installation, database and parser health")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser("manifest", help="export an evidence manifest for a capture")
+    p.add_argument("paste_id", type=int)
+    p.add_argument("--format", default="json", choices=["json", "md"])
+    p.add_argument("-o", "--output", default="")
+    p.add_argument("--reveal", action="store_true", help="do not redact command/secrets")
+    p.set_defaults(func=cmd_manifest)
+
+    p = sub.add_parser("verify", help="verify a manifest, a capture, or the evidence chain")
+    p.add_argument("--manifest", default="", help="manifest JSON path")
+    p.add_argument("--raw", default="", help="original artifact for offline input verification")
+    p.add_argument("--paste", dest="paste_id", type=int, default=None)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_verify)
+
+    p = sub.add_parser("demo", help="seed the sample program and first report")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_demo)
 
     p = sub.add_parser("programs", help="list programs")
     p.add_argument("--json", action="store_true")

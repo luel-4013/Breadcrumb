@@ -57,14 +57,38 @@ python3.12 -m venv .venv
 .venv/bin/python run.py
 ```
 
+First report in five minutes:
+
+```bash
+.venv/bin/python -m app.cli demo      # seed a sample program and captures
+# open the printed /reports/<id>/html URL, or run the app and click
+# "Load sample program" on the empty dashboard
+.venv/bin/python -m app.cli doctor    # check Python, SQLite, paths, key, parsers
+```
+
 ## Features
 
 - **20+ parsers**: nmap (text/greppable/XML), **ProjectDiscovery nuclei JSONL**
   (→ severity-tagged findings), **httpx JSON** (status, title, tech, CNAME),
+  **BBOT JSON/JSONL** (DNS, IPs, ports, URLs, technologies, findings),
   naabu/masscan port output, subfinder-style hosts, URLs, DNS records, HTTP
   headers, JWTs, AWS-style secrets, credentials, hashes, CVEs, emails, IPs/CIDRs,
   **ffuf JSON**, **Dalfox JSON/JSONL**, **Amass JSON**, **WhatWeb JSON** and
   **wafw00f JSON**. Re-importing tool output never duplicates findings.
+- **Import trust, not silent drops**: every capture produces a machine-readable
+  import report with parser versions, completeness, skipped rows, warnings and
+  a “why zero entities” hint. `GET /api/v1/pastes/{id}/report` or
+  `breadcrumb ingest --report-json -` shows it; `--dry-run` parses without
+  writing. Malformed JSONL rows are counted, not swallowed.
+- **Evidence Manifest v2**: every capture exports a redacted JSON/Markdown
+  manifest with the source tool, command, parser versions, scope hashes, chain
+  position, input SHA-256 and full/redacted output hashes.
+  `breadcrumb verify --manifest <file> --raw <artifact>` checks it offline;
+  `breadcrumb verify` checks the whole hash chain.
+- **`breadcrumb doctor`**: diagnoses Python, SQLite, database directory/disk,
+  integrity, schema version, key file, port, parser registry and optional tools
+  with copy-paste fixes. `--json` and `/api/v1/doctor` are available for support
+  scripts.
 - **Subdomain-takeover candidates**: a host whose CNAME points at an unclaimed
   S3 bucket, Heroku app, GitHub Pages site, etc. is flagged as a high-severity
   finding (offline heuristic, from the can-i-take-over-xyz fingerprints).
@@ -181,9 +205,11 @@ pre-migration backups are scrubbed automatically; treat any older
 `*.pre-migrate-*.bak` files from before this version as sensitive and delete
 them once you have verified the migration.
 
-Limits: 5 MB per paste/file/API body, 25,000 entities per paste (truncated
-with a visible notice). Every ingest reports parser failures instead of
-failing silently — a zero-entity capture tells you why.
+Limits: 5 MB per paste/file/API body, 25,000 entities per paste by default
+(truncated with a visible notice; `--max-entities` and the API `max_entities`
+field raise it per import). Every ingest reports parser failures instead of
+failing silently — a zero-entity capture tells you why, with a hint and the
+parser issues that caused it.
 
 LLM providers are configured in the UI under **Settings** (stored in
 `breadcrumb.llm.json`, git-ignored). Point Jan at
@@ -205,7 +231,13 @@ work.
 
 ```bash
 python -m app.cli serve                       # run the web UI
+python -m app.cli demo                        # seed sample program + first report
+python -m app.cli doctor --json               # installation/database/parser checks
 python -m app.cli ingest scan.txt --program 1 # headless ingest (or - for stdin)
+python -m app.cli ingest scan.txt --dry-run   # parse/report without writing
+python -m app.cli ingest scan.txt --report-json -  # machine-readable import report
+python -m app.cli manifest 1 --format md -o capture.md
+python -m app.cli verify --paste 1            # capture/manifest/hash-chain check
 python -m app.cli export 1 --format sarif -o out.sarif
 python -m app.cli gate 1 --max-severity high   # exit 1 to fail a CI job
 python -m app.cli findings --program 1 --min-severity high
@@ -226,8 +258,13 @@ python -m app.cli import-leadline --db /path/to/leadline.db --dry-run
 curl -X POST /api/v1/pastes -H 'Content-Type: application/json' \
   -d '{"text": "...", "program_id": 1}'
 
-# query
-curl '/api/v1/entities?program_id=1&type=subdomain'
+# import trust + evidence
+curl '/api/v1/pastes/1/report'          # completeness, skipped rows, issues, hint
+curl '/api/v1/pastes/1/manifest'        # redacted Evidence Manifest v2
+curl '/api/v1/doctor'                   # diagnostics (200 ok, 503 failure)
+
+# query (paginated)
+curl '/api/v1/entities?program_id=1&type=subdomain&limit=100&offset=0'
 curl '/api/v1/findings?program_id=1&min_severity=high'
 curl /api/v1/programs
 
@@ -267,10 +304,19 @@ reverse proxy.
 
 ## Roadmap
 
-- Publish the 0.4.0 Leadline merge release
-- Scheduled re-import (cron) on top of the drop-folder watcher
-- Scanned/OCR PDF export (text PDF is implemented)
-- Status-code scope filters and per-rule severity overrides
+- **0.5.0 — Proof:** parser contract, import reports/completeness, Manifest v2,
+  `breadcrumb doctor`, sample demo, benchmark harness. Implemented.
+- **0.6.0 — Memory:** Ledger v2, diff v2, scope v2 (status-code/path/rule),
+  graph v2, saved views.
+- **0.7.0 — Report:** templates, redaction, review bundle, HackerOne/DefectDojo
+  exports validated against test instances.
+- **0.8.0 — Automate:** scheduled re-import, local parser SDK, stable API
+  pagination, 1M-entity performance.
+- **0.9.0 — Capture:** optional screenshot import and adapter hardening.
+- **1.0.0 — Flagship:** security/migration/rollback/soak gates and docs.
+
+See [docs/IMPORT_COOKBOOK.md](docs/IMPORT_COOKBOOK.md) and
+[docs/MANIFEST_AND_DOCTOR.md](docs/MANIFEST_AND_DOCTOR.md).
 
 ## Contributing
 

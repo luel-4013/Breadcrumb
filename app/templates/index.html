@@ -137,7 +137,11 @@
   <div class="empty-state">
     <span class="es-icon">◈</span>
     <h3>No programs yet</h3>
-    <p>Create one above to group your recon by engagement.</p>
+    <p>Create one above to group your recon by engagement, or load the sample program and see a report in under five minutes.</p>
+    <form method="post" action="/demo">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+      <button class="primary" type="submit">Load sample program</button>
+    </form>
   </div>
   {% endif %}
 </section>

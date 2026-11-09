@@ -8,7 +8,8 @@ import json
 from urllib.parse import urlparse
 
 from . import register
-from .base import Entity, Parser, Relationship
+from .base import Entity, Parser, ParseResult, Relationship
+from .jsonl import jsonl_issues
 
 _SEV = ("critical", "high", "medium", "low", "info", "unknown")
 
@@ -147,3 +148,18 @@ class NucleiParser(Parser):
                 }
             )
         return out
+
+    def parse_detailed(self, text):
+        entities, rels = self.parse(text)
+        findings = self.findings(text)
+        issues, skipped = jsonl_issues(text, self.name)
+        records = sum(1 for _ in self._records(text))
+        return ParseResult(
+            entities=entities,
+            relationships=rels,
+            findings=findings,
+            issues=issues,
+            skipped_rows=skipped,
+            parser_version=self.parser_version,
+            stats={"records": records},
+        )

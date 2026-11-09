@@ -64,6 +64,16 @@ class Paste(SQLModel, table=True):
     # partial unique indexes in app.db.
     chain_seq: Optional[int] = None
     capture_key: Optional[str] = None
+    # Import trust (Phase A). Every capture explains itself: how complete the
+    # parse was, which parser versions ran, what was skipped, and how it was
+    # produced. The manifest is derived from these fields plus the sealed
+    # content, so it can be verified offline.
+    completeness: float = 1.0
+    skipped_rows: int = 0
+    parser_versions: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    import_stats: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    command: Optional[str] = Field(default=None, sa_column=Column(Text))
+    source_meta: dict = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=_utcnow)
 
 

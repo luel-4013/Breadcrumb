@@ -193,7 +193,9 @@ with Session(engine) as session:
     import json
 
     payload = json.loads(result.stdout.strip().splitlines()[-1])
-    assert payload["schema_version"] == 4
+    from app.db import SCHEMA_VERSION
+
+    assert payload["schema_version"] == SCHEMA_VERSION
     assert {"chain_seq", "capture_key", "job_id", "attempt_id", "phase"} <= set(
         payload["paste_columns"]
     )

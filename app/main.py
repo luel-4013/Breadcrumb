@@ -404,6 +404,20 @@ def create_program(
     return RedirectResponse(f"/programs/{program.id}", status_code=303)
 
 
+@app.post("/demo")
+def create_demo(session: Session = Depends(get_session)):
+    """Seed the sample program from the dashboard (idempotent)."""
+    from .demo import run_demo
+
+    result = run_demo(session)
+    message = (
+        f"Demo ready: {result['entities']} entities, {result['findings']} findings"
+    )
+    return RedirectResponse(
+        f"/programs/{result['program_id']}?msg={quote(message)}", status_code=303
+    )
+
+
 @app.get("/programs/{program_id}", response_class=HTMLResponse)
 def program_view(program_id: int, request: Request, session: Session = Depends(get_session)):
     program = session.get(Program, program_id)
@@ -823,6 +837,9 @@ def _ingest(
     job_id: int | None = None,
     attempt_id: int | None = None,
     phase: str | None = None,
+    command: str | None = None,
+    source_meta: dict | None = None,
+    max_entities: int | None = None,
 ) -> Paste:
     """Backward-compatible wrapper used by the existing routes and CLI."""
     result = ingest_mod.ingest(
@@ -836,8 +853,10 @@ def _ingest(
             job_id=job_id,
             attempt_id=attempt_id,
             phase=phase,
+            command=command,
+            source_meta=source_meta or {},
             # Kept as a module-level constant so tests can monkeypatch it.
-            max_entities=MAX_ENTITIES_PER_PASTE,
+            max_entities=max_entities or MAX_ENTITIES_PER_PASTE,
         ),
     )
     return result.paste
@@ -849,22 +868,33 @@ def create_paste(
     program_id: str = Form(""),
     target_id: str = Form(""),
     source: str = Form("manual"),
+    command: str = Form(""),
     upload: UploadFile | None = File(None),
     session: Session = Depends(get_session),
 ):
     body = text or ""
     label = source
+    source_meta: dict = {}
     if upload is not None and upload.filename:
         raw = upload.file.read(MAX_UPLOAD_BYTES + 1)
         if len(raw) > MAX_UPLOAD_BYTES:
             raise HTTPException(status_code=413, detail="File too large (max 5 MB)")
         body = (body + "\n" if body else "") + raw.decode("utf-8", errors="replace")
         label = f"file:{upload.filename}"
+        source_meta["filename"] = upload.filename
     if not body.strip():
         return RedirectResponse("/inbox", status_code=303)
     pid = int(program_id) if program_id.strip() else None
     tid = int(target_id) if target_id.strip() else None
-    paste = _ingest(session, body, pid, tid, label)
+    paste = _ingest(
+        session,
+        body,
+        pid,
+        tid,
+        label,
+        command=command.strip() or None,
+        source_meta=source_meta,
+    )
     n = session.exec(
         select(func.count()).select_from(Entity).where(Entity.paste_id == paste.id)
     ).one()
@@ -1078,67 +1108,9 @@ def api_verify(session: Session = Depends(get_session)):
     reported as ``gaps`` (not tampering); legacy unsealed captures are
     reported as ``unsealed``. A duplicate predecessor is a ``fork``.
     """
-    pastes = session.exec(select(Paste).order_by(Paste.id)).all()
-    by_id = {p.id: p for p in pastes}
-    broken, unsealed, gaps = None, 0, 0
-    sealed = [p for p in pastes if p.content_sha256 and p.chain_hash]
-    sequence_ok = True
-    previous_seq = 0
-    for p in sealed:
-        if p.chain_seq is None or p.chain_seq <= previous_seq:
-            sequence_ok = False
-            break
-        previous_seq = p.chain_seq
-    prev_counts = Counter(p.prev_paste_id for p in sealed if p.prev_paste_id is not None)
-    forks = sum(1 for count in prev_counts.values() if count > 1)
-    for p in pastes:
-        if not p.content_sha256 or not p.chain_hash:
-            unsealed += 1
-            continue
-        content = hashlib.sha256((p.raw or "").encode("utf-8", errors="replace")).hexdigest()
-        if content != p.content_sha256:
-            broken = p.id
-            break
-        if p.prev_paste_id is None:
-            expected = hashlib.sha256(f"genesis:{content}".encode("utf-8")).hexdigest()
-        else:
-            prev = by_id.get(p.prev_paste_id)
-            if prev is None:
-                gaps += 1
-                continue
-            expected = hashlib.sha256(
-                f"{prev.chain_hash or 'genesis'}:{content}".encode("utf-8")
-            ).hexdigest()
-        if expected != p.chain_hash:
-            broken = p.id
-            break
-    chain = session.get(EvidenceChain, 1)
-    last = max(sealed, key=lambda p: (p.chain_seq or 0, p.id or 0)) if sealed else None
-    head_ok = chain is not None and chain.head_paste_id == (last.id if last else None)
-    length_ok = chain is not None and chain.length == len(sealed)
-    valid = (
-        broken is None
-        and forks == 0
-        and sequence_ok
-        and head_ok
-        and length_ok
-    )
-    return JSONResponse(
-        {
-            "valid": valid,
-            "captures": len(pastes),
-            "sealed": len(pastes) - unsealed,
-            "unsealed": unsealed,
-            "gaps": gaps,
-            "broken_at": broken,
-            "forks": forks,
-            "sequence_ok": sequence_ok,
-            "chain_head": chain.head_paste_id if chain is not None else None,
-            "chain_length": chain.length if chain is not None else 0,
-            "head_ok": head_ok,
-            "length_ok": length_ok,
-        }
-    )
+    from .evidence import verify_chain
+
+    return JSONResponse(verify_chain(session))
 
 
 @app.get("/pipeline", response_class=HTMLResponse)
@@ -2424,6 +2396,9 @@ async def api_create_paste(request: Request, session: Session = Depends(get_sess
     content_type = request.headers.get("content-type", "")
     program_id = target_id = None
     source = "api"
+    command = None
+    source_meta: dict = {}
+    max_entities = MAX_ENTITIES_PER_PASTE
     if "application/json" in content_type:
         try:
             payload = await request.json()
@@ -2433,6 +2408,12 @@ async def api_create_paste(request: Request, session: Session = Depends(get_sess
         program_id = payload.get("program_id")
         target_id = payload.get("target_id")
         source = payload.get("source", "api") or "api"
+        command = payload.get("command") or None
+        source_meta = payload.get("source_meta") or {}
+        try:
+            max_entities = max(1, int(payload.get("max_entities") or MAX_ENTITIES_PER_PASTE))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="max_entities must be an integer")
     else:
         raw = await request.body()
         if len(raw) > MAX_UPLOAD_BYTES:
@@ -2440,13 +2421,109 @@ async def api_create_paste(request: Request, session: Session = Depends(get_sess
         text = raw.decode("utf-8", errors="replace")
     if not text.strip():
         raise HTTPException(status_code=400, detail="Empty body")
-    paste = _ingest(session, text, program_id, target_id, source)
-    count = session.exec(
-        select(func.count()).select_from(Entity).where(Entity.paste_id == paste.id)
-    ).one()
-    return {"paste_id": paste.id, "entities": count, "parsers": paste.parsers or [],
-            "errors": paste.parse_errors or [],
-            "warning": "no entities detected" if count == 0 else ""}
+    paste = _ingest(
+        session,
+        text,
+        program_id,
+        target_id,
+        source,
+        command=command,
+        source_meta=source_meta if isinstance(source_meta, dict) else {},
+        max_entities=max_entities,
+    )
+    report = ingest_mod.import_report(session, paste)
+    return {
+        "paste_id": paste.id,
+        "entities": report["entities"],
+        "parsers": paste.parsers or [],
+        "errors": paste.parse_errors or [],
+        "warning": report["warning"],
+        "findings": report["findings"],
+        "completeness": report["completeness"],
+        "skipped_rows": report["skipped_rows"],
+        "parser_versions": report["parser_versions"],
+        "report_url": f"/api/v1/pastes/{paste.id}/report",
+        "manifest_url": f"/api/v1/pastes/{paste.id}/manifest",
+    }
+
+
+@app.get("/api/v1/pastes/{paste_id}/report")
+def api_import_report(paste_id: int, session: Session = Depends(get_session)):
+    """The machine-readable import report, including why a capture was empty."""
+    paste = session.get(Paste, paste_id)
+    if paste is None:
+        raise HTTPException(status_code=404, detail="Capture not found")
+    return JSONResponse(ingest_mod.import_report(session, paste))
+
+
+@app.get("/api/v1/pastes/{paste_id}/manifest")
+def api_manifest(
+    paste_id: int,
+    reveal: bool = False,
+    session: Session = Depends(get_session),
+):
+    """Evidence Manifest v2 (redacted by default)."""
+    from .manifest import build_manifest
+
+    paste = session.get(Paste, paste_id)
+    if paste is None:
+        raise HTTPException(status_code=404, detail="Capture not found")
+    manifest = build_manifest(session, paste, redact=not reveal)
+    return JSONResponse(
+        manifest,
+        headers={
+            "Content-Disposition": f'attachment; filename="breadcrumb-{paste_id}-manifest.json"'
+        },
+    )
+
+
+@app.get("/pastes/{paste_id}/manifest.json")
+def manifest_json_view(
+    paste_id: int,
+    reveal: bool = False,
+    session: Session = Depends(get_session),
+):
+    from .manifest import build_manifest, manifest_json
+
+    paste = session.get(Paste, paste_id)
+    if paste is None:
+        raise HTTPException(status_code=404, detail="Capture not found")
+    return PlainTextResponse(
+        manifest_json(build_manifest(session, paste, redact=not reveal)),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="breadcrumb-{paste_id}-manifest.json"'
+        },
+    )
+
+
+@app.get("/pastes/{paste_id}/manifest.md")
+def manifest_md_view(
+    paste_id: int,
+    reveal: bool = False,
+    session: Session = Depends(get_session),
+):
+    from .manifest import build_manifest, manifest_markdown
+
+    paste = session.get(Paste, paste_id)
+    if paste is None:
+        raise HTTPException(status_code=404, detail="Capture not found")
+    return PlainTextResponse(
+        manifest_markdown(build_manifest(session, paste, redact=not reveal)),
+        media_type="text/markdown",
+        headers={
+            "Content-Disposition": f'attachment; filename="breadcrumb-{paste_id}-manifest.md"'
+        },
+    )
+
+
+@app.get("/api/v1/doctor")
+def api_doctor():
+    """Installation/database/parser diagnostics for scripts and support."""
+    from .doctor import run_checks
+
+    report = run_checks()
+    return JSONResponse(report, status_code=200 if report.get("ok") else 503)
 
 
 @app.get("/api/v1/entities")
@@ -2455,6 +2532,7 @@ def api_entities(
     type: str | None = None,  # noqa: A002
     q: str = "",
     limit: int = 1000,
+    offset: int = 0,
     session: Session = Depends(get_session),
 ):
     stmt = select(Entity).where(Entity.ignored == False).order_by(Entity.id)  # noqa: E712
@@ -2464,9 +2542,17 @@ def api_entities(
         stmt = stmt.where(Entity.type == type)
     if q.strip():
         stmt = stmt.where(Entity.value.ilike(f"%{q.strip()}%"))
-    rows = session.exec(stmt.limit(max(1, min(limit, 5000)))).all()
+    total = session.exec(select(func.count()).select_from(stmt.subquery())).one()
+    page_size = max(1, min(limit, 5000))
+    page_offset = max(0, offset)
+    rows = session.exec(stmt.offset(page_offset).limit(page_size)).all()
+    next_offset = page_offset + len(rows)
     return {
         "count": len(rows),
+        "total": int(total or 0),
+        "offset": page_offset,
+        "limit": page_size,
+        "next_offset": next_offset if next_offset < int(total or 0) else None,
         "entities": [
             {"id": e.id, "type": e.type, "value": e.value, "parser": e.parser,
              "scope_status": e.scope_status, "program_id": e.program_id,

@@ -2,7 +2,7 @@ import re
 import xml.etree.ElementTree as ET
 
 from . import register
-from .base import Entity, Parser, Relationship
+from .base import Entity, Parser, ParserIssue, ParseResult, Relationship
 
 REPORT_RE = re.compile(
     r"Nmap scan report for[ \t]+(?P<host>.+?)(?:[ \t]+\((?P<ip>[0-9a-fA-F:.]+)\))?[ \t]*$",
@@ -43,6 +43,30 @@ class NmapParser(Parser):
             except ET.ParseError:
                 pass
         return self._parse_text(text)
+
+    def parse_detailed(self, text):
+        issues: list[ParserIssue] = []
+        if "<nmaprun" in text:
+            try:
+                entities, rels = self._parse_xml(text)
+            except ET.ParseError as exc:
+                issues.append(
+                    ParserIssue(
+                        self.name,
+                        "skipped_row",
+                        f"nmap XML could not be parsed ({exc}); fell back to text",
+                    )
+                )
+                entities, rels = self._parse_text(text)
+        else:
+            entities, rels = self._parse_text(text)
+        return ParseResult(
+            entities=entities,
+            relationships=rels,
+            issues=issues,
+            parser_version=self.parser_version,
+            stats={"hosts": len({e.normalized for e in entities if e.type in {"ip", "domain", "subdomain"}})},
+        )
 
     def _add_host(self, entities, seen, host_val, ip):
         if ip and ip not in seen:

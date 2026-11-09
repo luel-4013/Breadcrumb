@@ -9,7 +9,8 @@ import json
 import re
 
 from . import register
-from .base import Entity, Parser, Relationship
+from .base import Entity, Parser, ParseResult, Relationship
+from .jsonl import jsonl_issues
 
 _IP_RE = re.compile(r"^[0-9]{1,3}(?:\.[0-9]{1,3}){3}$")
 
@@ -122,3 +123,16 @@ class HttpxParser(Parser):
                 rels.append(Relationship(src_value=hostname, src_type="host",
                                          dst_value=ip, dst_type="ip", rel_type="resolves_to"))
         return entities, rels
+
+    def parse_detailed(self, text):
+        entities, rels = self.parse(text)
+        issues, skipped = jsonl_issues(text, self.name)
+        records = sum(1 for _ in self._records(text))
+        return ParseResult(
+            entities=entities,
+            relationships=rels,
+            issues=issues,
+            skipped_rows=skipped,
+            parser_version=self.parser_version,
+            stats={"records": records},
+        )

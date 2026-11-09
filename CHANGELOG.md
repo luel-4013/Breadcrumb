@@ -3,8 +3,79 @@
 All notable changes to Breadcrumb are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-The Leadline merge is the **0.4.0** release; the version in `app/__init__.py`
-is `0.4.0`.
+The Leadline merge is the **0.4.0** release; **0.5.0** is the Phase A “Proof”
+release. The version in `app/__init__.py` is `0.5.0`.
+
+## [0.5.0] — 2026-11-09
+
+Phase A makes the first mile trustworthy: every import explains itself, every
+capture has a portable manifest, and a broken install is diagnosed before the
+user imports real data.
+
+### Added — parser contract and import trust
+
+- Parser Contract v1: `Parser.parse_detailed()` returns a `ParseResult` with
+  entities, relationships, findings, `ParserIssue`s, skipped-row counts, a
+  parser version and stats. `analyze_detailed()` is the new pipeline;
+  `analyze()` remains a four-tuple compatibility wrapper.
+- Detailed accounting for nmap (XML fallback), httpx, nuclei and Amass; a new
+  **BBOT** JSON/JSONL parser covering DNS names, IPs, ports, URLs, HTTP
+  responses, technologies, emails, CIDRs, ASNs, storage buckets and findings.
+- Malformed JSONL rows are reported as `skipped_row` issues instead of being
+  silently dropped. Pretty-printed JSON and JSON arrays are not misdiagnosed.
+- Import reports: `app.ingest.import_report()` and
+  `GET /api/v1/pastes/{id}/report` expose parsed/persisted counts, findings,
+  completeness, skipped rows, parser versions, issues and a “why zero” hint.
+- CLI: `ingest --report-json`, `--json`, `--dry-run`, `--command`,
+  `--source-meta`, `--max-entities`.
+- Schema 5 adds `paste.completeness`, `paste.skipped_rows`,
+  `paste.parser_versions`, `paste.import_stats`, `paste.command` and
+  `paste.source_meta`, with an additive migration and pre-migration backup.
+- Composite indexes for 100k-scale imports and paginated
+  `GET /api/v1/entities` (`total`, `offset`, `next_offset`).
+
+### Added — Evidence Manifest v2 and doctor
+
+- `app/manifest.py`: redacted JSON/Markdown manifests with input SHA-256,
+  full/redacted output hashes, parser versions, scope hashes, chain position
+  and warnings. Routes: `/pastes/{id}/manifest.json`,
+  `/pastes/{id}/manifest.md`, `/api/v1/pastes/{id}/manifest`.
+- CLI: `manifest`, `verify --manifest/--raw`, `verify --paste`,
+  `verify` (whole chain). `app/evidence.py` shares chain verification between
+  the API and CLI.
+- `app/redaction.py`: conservative masking for auth headers, API keys,
+  passwords, JWTs, cloud/GitHub/Slack tokens, private keys and URL
+  credentials; sensitive `source_meta` keys are replaced.
+- `app/doctor.py` and `breadcrumb doctor --json` /
+  `GET /api/v1/doctor`: read-only Python, SQLite, path, disk, integrity, WAL,
+  schema, key, port, parser and optional-tool checks with copy-paste fixes.
+
+### Added — onboarding and performance
+
+- `breadcrumb demo` and the dashboard “Load sample program” button seed five
+  idempotent sample captures (nmap, httpx, nuclei, BBOT, Amass), 45 entities
+  and six findings with a report and manifest in under a minute.
+- `scripts/bench_import.py` measures the full ingest path for 10k/100k
+  entities on a laptop and reports completeness, skipped rows and throughput.
+  Reference run (Linux, Python 3.12, SQLite 3.45, laptop-class CPU):
+  10k httpx entities in 10.4s (~964/s), 100k in 81.9s (~1,221/s), 56 MB
+  database, 100% completeness and zero skipped rows in both runs.
+- `docs/IMPORT_COOKBOOK.md` and `docs/MANIFEST_AND_DOCTOR.md`.
+
+### Tests
+
+- **195 passed, 1 warning** at the Phase A cut (13 new tests: parser contract,
+  BBOT, malformed JSONL, import reports, consolidation, truncation, manifest
+  round-trip and redaction, doctor, demo idempotency, pagination, benchmark).
+- Old-database subprocess migration now asserts the live `SCHEMA_VERSION`
+  instead of a hard-coded value.
+
+### Upgrade notes
+
+- From 0.4.0: start the app once; the additive schema 5 migration runs with a
+  pre-migration backup. Existing captures get `completeness = 1.0`,
+  `skipped_rows = 0`, empty parser versions/import stats and no command.
+- The `v0.4.0` tag and release remain intact. 0.5.0 is additive.
 
 ## [0.4.0] — 2026-11-08
 

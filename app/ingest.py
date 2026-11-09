@@ -28,7 +28,7 @@ from sqlmodel import Session, func, select
 from .attribution import consolidate_entities, rebuild_program
 from .db import begin_immediate
 from .models import Entity, EvidenceChain, Finding, Paste, Relationship, Target
-from .parsers import analyze, extract_findings
+from .parsers import analyze_detailed
 from .takeover import detect_takeovers
 
 # Hard ceiling per ingest so a pathological paste can't exhaust disk/RAM.
@@ -48,6 +48,11 @@ class IngestRequest:
     attempt_id: int | None = None
     phase: str | None = None
     max_entities: int = MAX_ENTITIES_PER_PASTE
+    # Import provenance. ``command`` is the exact command that produced the
+    # artifact (redacted in manifests), ``source_meta`` holds filename/tool
+    # version/URL and other non-secret context.
+    command: str | None = None
+    source_meta: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -58,6 +63,10 @@ class IngestResult:
     duplicate: bool = False
     warning: str = ""
     parse_errors: list = field(default_factory=list)
+    completeness: float = 1.0
+    skipped_rows: int = 0
+    parser_versions: dict = field(default_factory=dict)
+    report: dict = field(default_factory=dict)
 
 
 def _reconcile_chain(session: Session, *, commit: bool = True) -> EvidenceChain:
@@ -247,20 +256,108 @@ def _existing_capture(session: Session, capture_key: str | None) -> Paste | None
     return session.exec(select(Paste).where(Paste.capture_key == capture_key)).first()
 
 
+def import_report(session: Session, paste: Paste) -> dict:
+    """The machine-readable story of one import.
+
+    Every import produces this report, including a zero-entity import. The
+    report is deliberately explicit about *why* a capture produced nothing:
+    a parser that matched but emitted no rows is a different failure from no
+    parser matching at all.
+    """
+    entity_count = int(
+        session.exec(
+            select(func.count()).select_from(Entity).where(Entity.paste_id == paste.id)
+        ).one()
+        or 0
+    )
+    finding_count = int(
+        session.exec(
+            select(func.count()).select_from(Finding).where(Finding.paste_id == paste.id)
+        ).one()
+        or 0
+    )
+    relationship_count = int(
+        session.exec(
+            select(func.count()).select_from(Relationship).where(Relationship.paste_id == paste.id)
+        ).one()
+        or 0
+    )
+    issues = list(paste.parse_errors or [])
+    parsers = list(paste.parsers or [])
+    stats = dict(paste.import_stats or {})
+    parsed_entities = int(stats.get("parsed_entities", entity_count) or 0)
+    parsed_findings = int(stats.get("parsed_findings", finding_count) or 0)
+    empty = not entity_count and not finding_count
+    # Cross-capture consolidation can merge every row from a re-import into
+    # records that already exist. That is a successful import, not an empty
+    # one, so it must not raise the zero-entity warning.
+    consolidated = empty and (parsed_entities > 0 or parsed_findings > 0)
+    warning = "no entities detected" if empty and not consolidated else ""
+    hint = ""
+    if warning and not parsers:
+        hint = (
+            "No parser matched this input. Check the format with "
+            "`python -m app.cli doctor`, or see docs/IMPORT_COOKBOOK.md."
+        )
+    elif warning:
+        hint = (
+            "Parsers matched but produced no entities. Read the issues below; "
+            "the input may be truncated, malformed, or a tool version we do "
+            "not recognize yet."
+        )
+    elif consolidated:
+        hint = (
+            "Parsed rows were merged into entities or findings that already "
+            "existed in this program. The capture is still sealed; see the "
+            "parsed counts above."
+        )
+    return {
+        "report_version": 1,
+        "paste_id": paste.id,
+        "program_id": paste.program_id,
+        "target_id": paste.target_id,
+        "source": paste.source,
+        "command": paste.command,
+        "source_meta": paste.source_meta or {},
+        "created_at": paste.created_at.isoformat() if paste.created_at else None,
+        "parsers": parsers,
+        "parser_versions": paste.parser_versions or {},
+        "tool_guess": paste.tool_guess,
+        "entities": entity_count,
+        "relationships": relationship_count,
+        "findings": finding_count,
+        # Parsed counts are recorded at import time, before cross-capture
+        # consolidation merges duplicate Entity rows. This is the honest
+        # "what did the parser see" number; ``entities`` is "what survives".
+        "parsed_entities": parsed_entities,
+        "parsed_relationships": int(stats.get("parsed_relationships", relationship_count) or 0),
+        "parsed_findings": parsed_findings,
+        "truncated_entities": int(stats.get("truncated_entities", 0) or 0),
+        "skipped_rows": int(paste.skipped_rows or 0),
+        "completeness": float(paste.completeness if paste.completeness is not None else 1.0),
+        "consolidated": consolidated,
+        "issues": issues,
+        "warning": warning,
+        "hint": hint,
+        "content_sha256": paste.content_sha256,
+        "chain_hash": paste.chain_hash,
+        "chain_seq": paste.chain_seq,
+    }
+
+
 def _result_for(session: Session, paste: Paste, *, duplicate: bool) -> IngestResult:
-    count = session.exec(
-        select(func.count()).select_from(Entity).where(Entity.paste_id == paste.id)
-    ).one()
-    findings = session.exec(
-        select(func.count()).select_from(Finding).where(Finding.paste_id == paste.id)
-    ).one()
+    report = import_report(session, paste)
     return IngestResult(
         paste=paste,
-        entities=int(count or 0),
-        findings=int(findings or 0),
+        entities=report["entities"],
+        findings=report["findings"],
         duplicate=duplicate,
-        warning="no entities detected" if not count else "",
+        warning=report["warning"],
         parse_errors=list(paste.parse_errors or []),
+        completeness=report["completeness"],
+        skipped_rows=report["skipped_rows"],
+        parser_versions=dict(paste.parser_versions or {}),
+        report=report,
     )
 
 
@@ -277,14 +374,35 @@ def ingest(session: Session, request: IngestRequest) -> IngestResult:
     if existing is not None:
         return _result_for(session, existing, duplicate=True)
 
-    entities, relationships, parsers, errors = analyze(text)
+    analysis = analyze_detailed(text)
+    entities = analysis.entities
+    relationships = analysis.relationships
+    parsers = analysis.parsers
+    errors = list(analysis.errors)
+    skipped_rows = int(analysis.skipped_rows or 0)
+    completeness = float(analysis.completeness)
+    parser_versions = dict(analysis.parser_versions)
+    parsed_findings = list(analysis.findings)
+    parsed_entities = len(entities)
+    parsed_relationships = len(relationships)
+    parsed_findings_count = len(parsed_findings)
+    truncated = 0
     max_entities = max(1, int(request.max_entities or MAX_ENTITIES_PER_PASTE))
     if len(entities) > max_entities:
-        errors = errors + [{
-            "parser": "*",
-            "error": f"truncated at {max_entities} entities ({len(entities)} found)",
-        }]
+        original_count = len(entities)
+        errors.append(
+            {
+                "parser": "*",
+                "code": "truncated",
+                "message": f"truncated at {max_entities} entities ({original_count} found)",
+                "error": f"truncated at {max_entities} entities ({original_count} found)",
+                "line": None,
+                "detail": {"kept": max_entities, "found": original_count},
+            }
+        )
         entities = entities[:max_entities]
+        truncated = original_count - max_entities
+        completeness = round(min(completeness, max_entities / max(1, original_count)), 4)
 
     paste: Paste | None = None
     for attempt in range(3):
@@ -309,6 +427,17 @@ def ingest(session: Session, request: IngestRequest) -> IngestResult:
                 prev_paste_id=prev_paste_id,
                 chain_seq=chain_seq,
                 capture_key=request.capture_key,
+                completeness=completeness,
+                skipped_rows=skipped_rows,
+                parser_versions=parser_versions,
+                import_stats={
+                    "parsed_entities": parsed_entities,
+                    "parsed_relationships": parsed_relationships,
+                    "parsed_findings": parsed_findings_count,
+                    "truncated_entities": truncated,
+                },
+                command=request.command,
+                source_meta=dict(request.source_meta or {}),
             )
             session.add(paste)
             session.flush()  # assign the id before moving the chain head
@@ -364,21 +493,15 @@ def ingest(session: Session, request: IngestRequest) -> IngestResult:
     consolidate_entities(session, request.program_id)
     if request.program_id:
         rebuild_program(session, request.program_id)
-    created = _persist_findings(
+    _persist_findings(
         session,
         request.program_id,
         request.target_id,
-        extract_findings(text) + detect_takeovers(entities),
+        parsed_findings + detect_takeovers(entities),
         paste.id,
     )
     _annotate_cross_program(session, request.program_id, paste.id)
-    return IngestResult(
-        paste=paste,
-        entities=len(entities),
-        findings=created,
-        warning="no entities detected" if not entities else "",
-        parse_errors=list(paste.parse_errors or []),
-    )
+    return _result_for(session, paste, duplicate=False)
 
 
 # Compatibility alias for code that imported the old private helper.

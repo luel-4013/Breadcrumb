@@ -19,25 +19,51 @@
       </div>
       <p class="muted">Parsers matched:
         {% for pr in (paste.parsers or []) %}<span class="chip">{{ pr }}</span> {% else %}none{% endfor %}
+        {% if paste.completeness is not none and paste.completeness < 1.0 %}
+        · <span class="badge out" title="Rows the parser accounted for">completeness {{ '%.0f'|format(paste.completeness * 100) }}%</span>
+        {% endif %}
+        {% if paste.skipped_rows %}· {{ paste.skipped_rows }} skipped row(s){% endif %}
       </p>
+      {% if paste.command %}
+      <p class="muted dim">command <span class="mono">{{ paste.command }}</span></p>
+      {% endif %}
+      {% if paste.parser_versions %}
+      <p class="muted dim">parser versions
+        {% for name, version in paste.parser_versions.items() %}<span class="chip">{{ name }} v{{ version }}</span>{% endfor %}
+      </p>
+      {% endif %}
       {% if paste.chain_hash %}
       <p class="muted dim" title="Tamper-evident evidence seal (SHA-256 hash chain). Verify all captures at /api/v1/verify.">
         seal <span class="mono">{{ paste.chain_hash[:16] }}…</span> ·
         content <span class="mono">{{ (paste.content_sha256 or '')[:12] }}…</span> ·
-        <a href="/api/v1/verify">verify chain</a>
+        <a href="/api/v1/verify">verify chain</a> ·
+        manifest <a href="/pastes/{{ paste.id }}/manifest.json">json</a> /
+        <a href="/pastes/{{ paste.id }}/manifest.md">md</a> ·
+        <a href="/api/v1/pastes/{{ paste.id }}/report">import report</a>
       </p>
+      {% endif %}
+      {% if not groups %}
+      {% set parsed_count = (paste.import_stats or {}).get('parsed_entities', 0) %}
+      {% if parsed_count %}
+      <div class="warn-box">
+        <strong>{{ parsed_count }} parsed entities were consolidated.</strong>
+        Every row in this capture already existed in the program, so no new
+        entity rows were kept. The evidence is sealed and the parsed counts are
+        recorded in the import report.
+      </div>
+      {% else %}
+      <div class="warn-box">
+        <strong>No entities detected.</strong> No parser matched this input — check the
+        format, or open an issue with a redacted sample.
+      </div>
+      {% endif %}
       {% endif %}
       {% if paste.parse_errors %}
       <div class="warn-box">
         <strong>{{ paste.parse_errors|length }} parser issue(s) — results may be incomplete:</strong>
         <ul class="ai-list">
-          {% for err in paste.parse_errors %}<li><span class="mono">{{ err.parser }}</span>: {{ err.error }}</li>{% endfor %}
+          {% for err in paste.parse_errors %}<li><span class="mono">{{ err.parser }}</span>: {{ err.message or err.error or err }}</li>{% endfor %}
         </ul>
-      </div>
-      {% elif not groups %}
-      <div class="warn-box">
-        <strong>No entities detected.</strong> No parser matched this input — check the
-        format, or open an issue with a redacted sample.
       </div>
       {% endif %}
       <form method="post" action="/pastes/{{ paste.id }}/assign" class="row">

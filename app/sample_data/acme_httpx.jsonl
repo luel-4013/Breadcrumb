@@ -1,0 +1,4 @@
+{"url":"https://app.demo.breadcrumb.test","input":"app.demo.breadcrumb.test","host":"192.0.2.10","port":443,"status_code":200,"title":"Acme Demo Portal","webserver":"nginx/1.24.0","tech":["nginx","React","Cloudflare"],"content_length":18432}
+{"url":"https://api.demo.breadcrumb.test/v2/health","input":"api.demo.breadcrumb.test","host":"192.0.2.11","port":443,"status_code":200,"title":"Acme API","webserver":"nginx/1.24.0","tech":["nginx","FastAPI","Python"],"content_length":412}
+{"url":"https://app.demo.breadcrumb.test/admin","input":"app.demo.breadcrumb.test","host":"192.0.2.10","port":443,"status_code":302,"title":"Redirecting","webserver":"nginx/1.24.0","tech":["nginx"],"content_length":0}
+{"url":"https://staging.demo.breadcrumb.test","input":"staging.demo.breadcrumb.test","host":"192.0.2.12","port":443,"status_code":200,"title":"Acme Staging","webserver":"Caddy","tech":["Caddy","Next.js"],"cname":["staging.acme-demo.pages.dev"],"content_length":9216}

@@ -1,8 +1,8 @@
 # Breadcrumb + Leadline planning documents
 
-Status: **planning and release complete; Phases 0–8 implemented, verified and
-released as `0.4.0` (2026-11-08). Post-release competitive research and flagship
-planning are complete as docs only; no application code changed.**
+Status: **Phase A of the flagship plan is implemented and released as `0.5.0`
+(2026-11-09). Phases 0–8 are implemented and released as `0.4.0` (2026-11-08).
+The `v0.4.0` tag remains intact; 0.5.0 is additive.**
 Included: durable job queue/worker, scope guard, encrypted-at-rest
 header-profile secrets, the twelve-phase `leadline-recon` preset (DNS, host
 intel, ports/TLS, HTTP, tech, JS, params, headers, API, vuln candidates, CVE
@@ -17,8 +17,10 @@ API, security model, hardware/AI guide, troubleshooting, backup/restore/upgrade
 runbook, security checklist, release notes and rollback plan are present.
 Post-release research (2026-11-08) studied 19 external projects plus the
 Leadline baseline, recorded 20 success/failure reasons per project, and produced
-a flagship plan for the evidence-first recon notebook. It is planning only: the
-`v0.4.0` tag and all application code are untouched.
+a flagship plan for the evidence-first recon notebook. Phase A (0.5.0) now
+implements the proof slice: parser contract, import reports/completeness,
+Evidence Manifest v2, `breadcrumb doctor`, sample demo, and a benchmark
+harness.
 Date: 2026-10-27 to 2026-11-08
 Repos inspected:
 
@@ -42,7 +44,7 @@ no code. The implementation is additive and is released as `0.4.0`.
 
 Test baseline after Phase 0: **72 passed, 1 warning** (historical).
 Current suite after the native-executor, secrets, Phase 4, Phase 5, Phase 6,
-Phase 7 and Phase 8 slices: **182 passed, 1 warning**.
+Phase 7, Phase 8 and Phase A slices: **195 passed, 1 warning**.
 
 ## Native-executor vertical slice (2026-11-06)
 
@@ -204,8 +206,14 @@ Post-release research and flagship planning:
 17. **[FLAGSHIP_PLAN_2026-11-08.md](FLAGSHIP_PLAN_2026-11-08.md)** — the
     evidence-first notebook thesis, competitive position, gap-to-plan
     traceability, Phases A–F, acceptance criteria, metrics, security/privacy,
-    pre-mortem and the go/no-go recommendation. Planning only; implementation
-    is pending owner approval.
+    pre-mortem and the go/no-go recommendation. Phase A is implemented in 0.5.0.
+
+Operational documents added by Phase A:
+
+18. **[IMPORT_COOKBOOK.md](IMPORT_COOKBOOK.md)** — top five formats, import
+    reports, zero-entity diagnostics, provenance and version matrix.
+19. **[MANIFEST_AND_DOCTOR.md](MANIFEST_AND_DOCTOR.md)** — Manifest v2 fields,
+    offline verification, redaction and the read-only doctor checks.
 
 ## One-paragraph summary
 

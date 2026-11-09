@@ -14,7 +14,7 @@ DB_PATH = Path(
 # Bump when a migration changes the on-disk contract. The value is recorded in
 # appstate so backups/restores and future migrations can be versioned
 # explicitly instead of inferred from column presence.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 engine = create_engine(
     f"sqlite:///{DB_PATH}",
@@ -91,6 +91,12 @@ MIGRATIONS = {
         "job_id": "INTEGER",
         "attempt_id": "INTEGER",
         "phase": "TEXT",
+        "completeness": "FLOAT DEFAULT 1.0",
+        "skipped_rows": "INTEGER DEFAULT 0",
+        "parser_versions": "TEXT DEFAULT '{}'",
+        "import_stats": "TEXT DEFAULT '{}'",
+        "command": "TEXT",
+        "source_meta": "TEXT DEFAULT '{}'",
     },
     "scanjob": {
         "target_id": "INTEGER",
@@ -129,13 +135,18 @@ MIGRATIONS = {
 INDEXES = [
     ("ix_entity_program_type", "entity (program_id, type)"),
     ("ix_entity_program_ignored", "entity (program_id, ignored)"),
+    ("ix_entity_program_scope", "entity (program_id, scope_status)"),
+    ("ix_entity_paste", "entity (paste_id)"),
     ("ix_entity_verdict", "entity (verdict)"),
     ("ix_entity_scope_status", "entity (scope_status)"),
     ("ix_entity_type_normalized", "entity (type, normalized)"),
+    ("ix_entity_norm_lower", "entity (lower(normalized))"),
     ("ix_relationship_program", "relationship (program_id)"),
     ("ix_finding_program", "finding (program_id)"),
     ("ix_finding_fingerprint", "finding (fingerprint)"),
+    ("ix_finding_paste", "finding (paste_id)"),
     ("ix_paste_program", "paste (program_id)"),
+    ("ix_paste_program_created", "paste (program_id, created_at)"),
     ("ix_paste_job", "paste (job_id)"),
     ("ix_paste_phase", "paste (phase)"),
     ("ix_jobattempt_job", "jobattempt (job_id, attempt_no)"),
