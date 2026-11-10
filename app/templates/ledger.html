@@ -2,38 +2,118 @@
 {% block title %}Ledger · Breadcrumb{% endblock %}
 {% block crumb %}Ledger{% endblock %}
 
+{% block actions %}
+  <a class="btn ghost sm" href="/ledger/export?format=jsonl&q={{ q|urlencode }}">Export JSONL</a>
+  <a class="btn ghost sm" href="/ledger/export?format=csv&q={{ q|urlencode }}">CSV</a>
+{% endblock %}
+
 {% block content %}
 <section class="card">
   <h2>Cross-program ledger</h2>
   <p class="muted">
-    Assets you have seen before — across <strong>{{ program_count }}</strong> program(s) in this
-    notebook. When a host, port, secret or finding appears in more than one program,
-    it shows up here. This is memory no single-engagement scanner keeps: test once,
-    remember everywhere.
+    Assets you have seen before — across <strong>{{ stats.programs }}</strong> program(s) in this
+    notebook. Every row links back to the captures that produced it, so memory never
+    becomes a claim without evidence.
   </p>
+  <ul class="stats">
+    <li><strong>{{ stats.entities }}</strong> entities</li>
+    <li><strong>{{ stats.programs }}</strong> programs</li>
+    <li><strong>{{ stats.cross_program_assets }}</strong> seen in 2+ programs</li>
+    <li><strong>{{ page.total }}</strong> matching this view</li>
+  </ul>
+
+  <form method="get" action="/ledger" class="row">
+    <input type="search" name="q" value="{{ q }}" placeholder="type:port scope:in tag:needs-auth seen:other-program status:200 q:admin">
+    <button class="btn sm" type="submit">Filter</button>
+    {% if q %}<a class="btn ghost sm" href="/ledger">Reset</a>{% endif %}
+  </form>
+  <p class="dim">
+    Filters: <code>type:</code> <code>scope:in|out|unknown</code> <code>tag:</code>
+    <code>verdict:</code> <code>program:</code> <code>status:200,204</code>
+    <code>seen:other-program</code> <code>sort:last_seen|first_seen|value|programs|occurrences</code>.
+  </p>
+
+  {% if views %}
+  <div class="row" style="flex-wrap:wrap">
+    <span class="side-label">Saved views</span>
+    {% for v in views %}
+    <span class="chip">
+      <a href="/ledger?view={{ v.id }}">{{ v.name }}</a>
+      <form method="post" action="/ledger/views/{{ v.id }}/delete" style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+        <button class="icon-btn" type="submit" title="Delete view" aria-label="Delete view">×</button>
+      </form>
+    </span>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <form method="post" action="/ledger/views" class="row">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+    <input type="hidden" name="query" value="{{ q }}">
+    <input type="hidden" name="kind" value="ledger">
+    <input type="text" name="name" placeholder="Name this view (e.g. auth surfaces)" required>
+    <button class="btn sm" type="submit">Save view</button>
+  </form>
 </section>
 
 <section class="card">
   {% if assets %}
   <table>
-    <thead><tr><th>Type</th><th>Asset</th><th>Programs</th></tr></thead>
+    <thead>
+      <tr>
+        <th>Type</th>
+        <th>Asset</th>
+        <th>Scope</th>
+        <th>Programs</th>
+        <th>Tags</th>
+        <th>Last seen</th>
+      </tr>
+    </thead>
     <tbody>
       {% for a in assets %}
       <tr>
         <td><span class="chip mono">{{ a.type }}</span></td>
-        <td class="mono">{{ a.value }}</td>
+        <td class="mono">
+          <a href="/ledger/asset?type={{ a.type|urlencode }}&value={{ a.value|urlencode }}">{{ a.value }}</a>
+          {% for code in a.status_codes %}<span class="chip mono">{{ code }}</span>{% endfor %}
+          {% if a.seen_before %}<span class="badge seen" title="Seen in {{ a.program_count }} programs">seen ×{{ a.program_count }}</span>{% endif %}
+        </td>
         <td>
-          <span class="badge in" title="{{ a.count }} programs">seen in {{ a.count }}</span>
-          {% for p in a.programs %}
-            <a class="chip" href="/programs/{{ p.id }}">{{ p.name }}</a>
+          {% for s in a.scope_statuses %}
+          <span class="badge {{ s if s in ('in', 'out') else '' }}" title="{{ a.scope_reasons|join(', ') }}">{{ s }}</span>
           {% endfor %}
         </td>
+        <td>
+          {% for p in a.programs %}
+          <a class="chip" href="/programs/{{ p.id }}">{{ p.name }}</a>
+          {% endfor %}
+          {% if a.targets %}
+          <span class="dim">· {{ a.targets|map(attribute='name')|join(', ') }}</span>
+          {% endif %}
+        </td>
+        <td>{% for t in a.tags %}<span class="chip tag">{{ t }}</span>{% endfor %}</td>
+        <td class="dim">{{ (a.last_seen or '')[:16].replace('T', ' ') }}</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
+  <div class="row" style="justify-content:space-between">
+    <span class="dim">Showing {{ page.offset + 1 }}–{{ page.offset + page.count }} of {{ page.total }}</span>
+    <span class="row">
+      {% if prev_offset is not none %}
+      <a class="btn ghost sm" href="/ledger?q={{ q|urlencode }}&offset={{ prev_offset }}&limit={{ page.limit }}">← Previous</a>
+      {% endif %}
+      {% if page.next_offset is not none %}
+      <a class="btn ghost sm" href="/ledger?q={{ q|urlencode }}&offset={{ page.next_offset }}&limit={{ page.limit }}">Next →</a>
+      {% endif %}
+    </span>
+  </div>
   {% else %}
-  <p class="empty">No asset has appeared in more than one program yet. Ingest into two programs that share a host and it appears here.</p>
+  <p class="empty">
+    No assets match this view yet. Import into two programs that share a host and it appears here.
+    {% if q %}<a href="/ledger">Clear the filter</a>.{% endif %}
+  </p>
   {% endif %}
 </section>
 {% endblock %}

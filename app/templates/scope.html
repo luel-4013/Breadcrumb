@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}{{ program.name }} · Scope · Breadcrumb{% endblock %}
+{% block crumb %}{{ program.name }} <span class="sep">/</span> <span class="sub">Scope</span>{% endblock %}
+
+{% block actions %}
+  <a class="btn ghost sm" href="/programs/{{ program.id }}">Back to program</a>
+  <a class="btn ghost sm" href="/programs/{{ program.id }}/graph">Graph</a>
+{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>{{ program.name }} · scope decisions</h2>
+  <p class="muted">
+    Every entity gets an explainable decision. Status filters only decide assets whose HTTP
+    status is known; unknown status is shown as <code>status_unknown</code>, never silently
+    dropped. Path rules use the full URL when the entity carries a host.
+  </p>
+  <ul class="stats">
+    <li><strong>{{ counts.get('in', 0) }}</strong> in scope</li>
+    <li><strong>{{ counts.get('out', 0) }}</strong> out of scope</li>
+    <li><strong>{{ counts.get('unknown', 0) }}</strong> unknown</li>
+    <li><strong>{{ total }}</strong> matching this filter</li>
+  </ul>
+
+  {% if reasons %}
+  <p class="muted">Decision reasons:
+    {% for reason, count in reasons.items() %}
+    <a class="chip mono" href="/programs/{{ program.id }}/scope?reason={{ reason|urlencode }}">{{ reason }} ×{{ count }}</a>
+    {% endfor %}
+  </p>
+  {% endif %}
+
+  <form method="get" action="/programs/{{ program.id }}/scope" class="row">
+    <input type="search" name="q" value="{{ q }}" placeholder="Filter by value…">
+    <select name="type">
+      <option value="">All types</option>
+      {% for t in node_types %}<option value="{{ t }}" {% if t == type %}selected{% endif %}>{{ t }}</option>{% endfor %}
+    </select>
+    <select name="status">
+      <option value="">Any status</option>
+      {% for s in ['in', 'out', 'unknown'] %}<option value="{{ s }}" {% if s == status %}selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select>
+    <select name="reason">
+      <option value="">Any reason</option>
+      {% for r in reasons.keys() %}<option value="{{ r }}" {% if r == reason %}selected{% endif %}>{{ r }}</option>{% endfor %}
+    </select>
+    <button class="btn sm" type="submit">Filter</button>
+    {% if q or type or status or reason %}<a class="btn ghost sm" href="/programs/{{ program.id }}/scope">Reset</a>{% endif %}
+  </form>
+</section>
+
+{% if focus %}
+<section class="card">
+  <h3>Why is <span class="mono">{{ focus.entity.value }}</span> {{ focus.decision.status }}?</h3>
+  <p>
+    Decision: <span class="badge {{ focus.decision.status if focus.decision.status in ('in', 'out') else '' }}">{{ focus.decision.status }}</span>
+    <span class="chip mono">{{ focus.decision.reason }}</span>
+    {% if focus.decision.rule %}<span class="chip mono">rule: {{ focus.decision.rule }}</span>{% endif %}
+    {% if focus.decision.status_code %}<span class="chip mono">HTTP {{ focus.decision.status_code }}</span>{% endif %}
+  </p>
+  {% if focus.decision.detail.allowed %}
+  <p class="muted">This rule only accepts status codes {{ focus.decision.detail.allowed|join(', ') }}.</p>
+  {% endif %}
+  <p class="dim">Rule kind: {{ focus.decision.rule_kind or '—' }}. Scope is recomputed from the program's in/out text on every rebuild; use the bulk actions below to make a decision durable.</p>
+</section>
+{% endif %}
+
+<section class="card">
+  <h3>Decisions</h3>
+  {% if rows %}
+  <form method="post" action="/programs/{{ program.id }}/scope/bulk">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+    <table>
+      <thead>
+        <tr>
+          <th><input type="checkbox" onclick="document.querySelectorAll('input[name=values]').forEach(c => c.checked = this.checked)" aria-label="Select all"></th>
+          <th>Type</th>
+          <th>Asset</th>
+          <th>Status</th>
+          <th>Reason</th>
+          <th>Rule</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td><input type="checkbox" name="values" value="{{ row.entity.type }}|{{ row.entity.value }}"></td>
+          <td><span class="chip mono">{{ row.entity.type }}</span></td>
+          <td class="mono">
+            <a href="/ledger/asset?type={{ row.entity.type|urlencode }}&value={{ row.entity.value|urlencode }}">{{ row.entity.value }}</a>
+            {% if row.entity.status_code %}<span class="chip mono">{{ row.entity.status_code }}</span>{% endif %}
+          </td>
+          <td><span class="badge {{ row.decision.status if row.decision.status in ('in', 'out') else '' }}">{{ row.decision.status }}</span></td>
+          <td><span class="chip mono">{{ row.decision.reason }}</span></td>
+          <td class="dim mono">{{ row.decision.rule or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="row">
+      <select name="action">
+        <option value="rebuild">Re-run scope (no rule change)</option>
+        <option value="in">Add selected hosts to in-scope rules</option>
+        <option value="out">Add selected hosts to out-of-scope rules</option>
+      </select>
+      <button class="btn sm" type="submit">Apply to selected</button>
+    </div>
+    <p class="dim">Bulk actions append hostnames to the program's scope text and rebuild attribution. Existing rules are preserved; duplicate lines are skipped.</p>
+  </form>
+  {% if shown < total %}
+  <p class="muted">Showing the first {{ shown }} of {{ total }} decisions. Narrow the filter to see more.</p>
+  {% endif %}
+  {% else %}
+  <p class="empty">No entities match this filter. Import a capture or clear the filter.</p>
+  {% endif %}
+</section>
+{% endblock %}

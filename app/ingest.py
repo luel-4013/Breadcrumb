@@ -27,8 +27,9 @@ from sqlmodel import Session, func, select
 
 from .attribution import consolidate_entities, rebuild_program
 from .db import begin_immediate
-from .models import Entity, EvidenceChain, Finding, Paste, Relationship, Target
+from .models import Entity, EvidenceChain, Finding, Paste, Program, Relationship, Target
 from .parsers import analyze_detailed
+from .scope import status_code_of
 from .takeover import detect_takeovers
 
 # Hard ceiling per ingest so a pathological paste can't exhaust disk/RAM.
@@ -139,6 +140,61 @@ def _seal_paste(
     return content, chain_hash, prev_id, seq, chain
 
 
+_SEVERITIES = {"critical", "high", "medium", "low", "info"}
+
+
+def _severity_overrides(session: Session, pid: int | None) -> dict[str, str]:
+    """Program-level rule -> severity overrides, validated and normalized."""
+    if pid is None:
+        return {}
+    program = session.get(Program, pid)
+    if program is None:
+        return {}
+    out: dict[str, str] = {}
+    for key, value in (program.rule_severities or {}).items():
+        rule = str(key or "").strip()
+        severity = str(value or "").strip().lower()
+        if rule and severity in _SEVERITIES:
+            out[rule] = severity
+    return out
+
+
+def reapply_severity_overrides(session: Session, pid: int) -> dict:
+    """Recompute finding severities after a program's overrides change.
+
+    The parser's original severity is kept in ``meta.parser_severity`` so
+    removing an override reverts to what the tool reported.
+    """
+    overrides = _severity_overrides(session, pid)
+    findings = session.exec(select(Finding).where(Finding.program_id == pid)).all()
+    changed = 0
+    for finding in findings:
+        if not finding.rule_id:
+            continue
+        meta = dict(finding.meta or {})
+        original = str(meta.get("parser_severity") or finding.severity or "info").lower()
+        target = overrides.get(finding.rule_id, original)
+        if target not in _SEVERITIES:
+            target = original
+        if finding.severity == target:
+            continue
+        finding.severity = target
+        if target != original:
+            meta["severity_override"] = {
+                "rule_id": finding.rule_id,
+                "from": original,
+                "to": target,
+            }
+        else:
+            meta.pop("severity_override", None)
+        finding.meta = meta
+        session.add(finding)
+        changed += 1
+    if changed:
+        session.commit()
+    return {"program_id": pid, "changed": changed, "overrides": len(overrides)}
+
+
 def _persist_findings(
     session: Session, pid: int | None, tid: int | None, findings: list[dict], paste_id: int
 ) -> int:
@@ -146,9 +202,12 @@ def _persist_findings(
 
     Re-importing the same tool output must never spray duplicate findings;
     an existing finding keeps its status/notes but refreshes its timestamp.
+    Per-rule severity overrides from the program are applied here, and the
+    original severity is preserved in ``meta`` for auditability.
     """
     if pid is None or not findings:
         return 0
+    overrides = _severity_overrides(session, pid)
     targets = session.exec(select(Target).where(Target.program_id == pid)).all()
     tmap = {t.name.strip().lower(): t.id for t in targets}
 
@@ -170,11 +229,33 @@ def _persist_findings(
         if not title:
             continue
         fingerprint = str(item.get("dedup_key") or f"{title}|{item.get('evidence', '')}")
+        rule_id = str(item.get("rule_id") or item.get("template") or "").strip()
+        original = str(item.get("severity") or "info").lower()
+        severity = overrides.get(rule_id, original)
+        meta = dict(item.get("meta") or {})
+        if rule_id:
+            meta.setdefault("rule_id", rule_id)
+        meta.setdefault("parser_severity", original)
+        if severity != original:
+            meta["severity_override"] = {
+                "rule_id": rule_id,
+                "from": original,
+                "to": severity,
+            }
         existing = session.exec(
             select(Finding).where(Finding.program_id == pid, Finding.fingerprint == fingerprint)
         ).first()
         if existing is not None:
             existing.updated_at = now
+            # An explicit override is configuration, not parser noise: apply
+            # it to an existing finding so "Save & rebuild" is predictable.
+            if rule_id in overrides and existing.severity != severity:
+                existing.severity = severity
+                merged = dict(existing.meta or {})
+                merged.update(meta)
+                existing.meta = merged
+            if rule_id and not existing.rule_id:
+                existing.rule_id = rule_id
             session.add(existing)
             continue
         cvss = item.get("cvss")
@@ -188,13 +269,15 @@ def _persist_findings(
                 target_id=target_id,
                 paste_id=paste_id,
                 title=title,
-                severity=str(item.get("severity") or "info").lower(),
+                severity=severity,
                 cvss=str(cvss) if cvss not in (None, "") else None,
                 description=item.get("description") or None,
                 evidence=item.get("evidence") or None,
                 tags=list(tags),
                 source_tool=item.get("parser"),
                 fingerprint=fingerprint,
+                rule_id=rule_id or None,
+                meta=meta,
                 updated_at=now,
             )
         )
@@ -446,6 +529,10 @@ def ingest(session: Session, request: IngestRequest) -> IngestResult:
             chain.updated_at = datetime.now(timezone.utc)
             session.add(chain)
             for entity in entities:
+                entity_meta = dict(entity.meta or {})
+                code = getattr(entity, "status_code", None)
+                if code is None:
+                    code = status_code_of(entity.value, entity.type, entity_meta)
                 session.add(
                     Entity(
                         paste_id=paste.id,
@@ -456,8 +543,12 @@ def ingest(session: Session, request: IngestRequest) -> IngestResult:
                         normalized=entity.normalized,
                         confidence=entity.confidence,
                         parser=entity.parser,
-                        meta=entity.meta,
+                        meta=entity_meta,
                         provenance=[paste.id],
+                        status_code=code,
+                        tags=list(getattr(entity, "tags", []) or []),
+                        verdict=getattr(entity, "verdict", "none") or "none",
+                        notes=getattr(entity, "notes", "") or None,
                     )
                 )
             for rel in relationships:

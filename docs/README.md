@@ -1,8 +1,9 @@
 # Breadcrumb + Leadline planning documents
 
-Status: **Phase A of the flagship plan is implemented and released as `0.5.0`
-(2026-11-09). Phases 0–8 are implemented and released as `0.4.0` (2026-11-08).
-The `v0.4.0` tag remains intact; 0.5.0 is additive.**
+Status: **Phase B of the flagship plan is implemented and released as `0.6.0`
+(2026-11-10). Phase A is `0.5.0` (2026-11-09). Phases 0–8 are implemented and
+released as `0.4.0` (2026-11-08). The `v0.4.0` tag remains intact; 0.5.0 and
+0.6.0 are additive.**
 Included: durable job queue/worker, scope guard, encrypted-at-rest
 header-profile secrets, the twelve-phase `leadline-recon` preset (DNS, host
 intel, ports/TLS, HTTP, tech, JS, params, headers, API, vuln candidates, CVE
@@ -20,7 +21,8 @@ Leadline baseline, recorded 20 success/failure reasons per project, and produced
 a flagship plan for the evidence-first recon notebook. Phase A (0.5.0) now
 implements the proof slice: parser contract, import reports/completeness,
 Evidence Manifest v2, `breadcrumb doctor`, sample demo, and a benchmark
-harness.
+harness. Phase B (0.6.0) implements the memory slice: Ledger v2, Diff v2,
+Scope v2 and Graph v2.
 Date: 2026-10-27 to 2026-11-08
 Repos inspected:
 
@@ -214,6 +216,15 @@ Operational documents added by Phase A:
     reports, zero-entity diagnostics, provenance and version matrix.
 19. **[MANIFEST_AND_DOCTOR.md](MANIFEST_AND_DOCTOR.md)** — Manifest v2 fields,
     offline verification, redaction and the read-only doctor checks.
+
+Operational documents added by Phase B:
+
+20. **[CROSS_PROGRAM_MEMORY.md](CROSS_PROGRAM_MEMORY.md)** — the Ledger, filter
+    language, saved views, worked cross-program example and JSONL round-trip.
+21. **[DIFF_COOKBOOK.md](DIFF_COOKBOOK.md)** — selectors, categories, recipes,
+    alerting and accuracy rules.
+22. **[SCOPE_DECISIONS.md](SCOPE_DECISIONS.md)** — rule shapes, precedence,
+    reason codes, status filters, per-rule severity overrides and bulk re-scope.
 
 ## One-paragraph summary
 

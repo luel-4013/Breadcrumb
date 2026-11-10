@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Column, Text
+from sqlalchemy import Column, Text, UniqueConstraint
 from sqlalchemy.types import JSON
 from sqlmodel import Field, SQLModel
 
@@ -22,6 +22,9 @@ class Program(SQLModel, table=True):
     ai_summary: Optional[str] = Field(default=None, sa_column=Column(Text))
     ai_model: Optional[str] = None
     ai_at: Optional[datetime] = None
+    # Phase B: per-rule severity overrides for imported findings.
+    # {"template-id": "critical"}. Applied at ingest, never destructive.
+    rule_severities: dict = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=_utcnow)
 
 
@@ -106,6 +109,12 @@ class Entity(SQLModel, table=True):
     parser: str = ""
     status: str = "new"
     scope_status: str = Field(default="unknown", index=True)
+    # Phase B: why the scope engine made this decision. Stable codes such as
+    # "in_rule", "out_rule", "status_filter", "no_match", "no_host".
+    scope_reason: str = ""
+    # HTTP status code observed for this asset, when known. Used by scope
+    # status filters and Ledger/diff filters; never guessed from a URL alone.
+    status_code: Optional[int] = Field(default=None, index=True)
     ignored: bool = Field(default=False, index=True)
     # Analyst verdict: noise suppression / accuracy (never a parser decision).
     # "none" | "confirmed" | "false-positive" | "needs-review"
@@ -157,6 +166,9 @@ class Finding(SQLModel, table=True):
     notes: Optional[str] = Field(default=None, sa_column=Column(Text))
     # Stable identity for re-import de-duplication (e.g. nuclei template+URL).
     fingerprint: Optional[str] = Field(default=None, index=True)
+    # Parser rule/template identity (nuclei template-id, BBOT finding name).
+    # Used for per-rule severity overrides and filtering.
+    rule_id: Optional[str] = Field(default=None, index=True)
     source_tool: Optional[str] = None
     # Analyst triage vocabulary shared with Entity: "none" | "confirmed" |
     # "needs-review" | "false-positive". ``status`` stays the workflow state
@@ -336,3 +348,24 @@ class RunnerToggle(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     runner_id: str = Field(index=True, unique=True)
     enabled: bool = True
+
+
+class SavedView(SQLModel, table=True):
+    """A named, local filter for the Ledger, diff or graph.
+
+    Saved views are deliberately local rows, not share links: Breadcrumb has no
+    account model and must keep working offline. ``query`` is the human-editable
+    filter string; ``params`` stores structured extras (left/right selectors for
+    a diff, graph options) so a view can be reopened exactly.
+    """
+
+    __tablename__ = "savedview"
+    __table_args__ = (UniqueConstraint("kind", "name", name="ux_savedview_kind_name"),)
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(index=True)
+    kind: str = Field(default="ledger", index=True)  # ledger | diff | graph
+    query: str = ""
+    params: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)

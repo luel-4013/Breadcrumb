@@ -159,6 +159,35 @@ def notify_changes(config: dict, program_name: str, added: int, removed: int) ->
     return send(config, "program.changed", title, text, {"program": program_name})
 
 
+def notify_diff(config: dict, label: str, summary: dict) -> dict:
+    """Called when an operator asks for a diff change alert (Diff v2)."""
+    if not config.get("on_scope_changes"):
+        return {"sent": False, "results": [], "reason": "filtered"}
+    if not summary.get("has_changes"):
+        return {"sent": False, "results": [], "reason": "no change"}
+    title = f"Change detected: {label}"
+    text = (
+        f"{summary.get('new_findings', 0)} new / "
+        f"{summary.get('removed_findings', 0)} gone findings · "
+        f"{summary.get('ports_opened', 0)} ports opened · "
+        f"{summary.get('endpoints_added', 0)} endpoints added · "
+        f"risk {summary.get('risk_before', 0)} → {summary.get('risk_after', 0)}"
+    )
+    return send(
+        config,
+        "diff.changed",
+        title,
+        text,
+        {
+            "new findings": summary.get("new_findings", 0),
+            "removed findings": summary.get("removed_findings", 0),
+            "ports opened": summary.get("ports_opened", 0),
+            "endpoints added": summary.get("endpoints_added", 0),
+            "risk delta": summary.get("risk_delta", 0),
+        },
+    )
+
+
 def test(config: dict):
     """Send a fixed test notification and report per-channel results."""
     probe = dict(config)

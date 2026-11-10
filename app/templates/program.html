@@ -5,6 +5,8 @@
 
 {% block actions %}
   <a class="btn ghost sm" href="/programs/{{ program.id }}/graph">Graph</a>
+  <a class="btn ghost sm" href="/programs/{{ program.id }}/scope">Scope</a>
+  <a class="btn ghost sm" href="/diff?left=program:{{ program.id }}">Diff</a>
   <a class="btn ghost sm" href="/programs/{{ program.id }}/changes">Changes</a>
   <a class="btn ghost sm" href="/pipeline?program_id={{ program.id }}">Pipeline</a>
   <a class="btn ghost sm" href="/reports/{{ program.id }}/html">Report</a>
@@ -31,11 +33,19 @@
   <div class="tabpanel active" data-panel="overview">
     {% if program.scope_in or program.scope_out %}
     <section class="card">
-      <h2>Scope</h2>
+      <div class="spread">
+        <h2>Scope</h2>
+        <a class="btn ghost sm" href="/programs/{{ program.id }}/scope">Why each asset is in or out →</a>
+      </div>
       <div class="grid">
         <div><h3>In scope</h3><pre class="scope">{{ program.scope_in or '—' }}</pre></div>
         <div><h3>Out of scope</h3><pre class="scope">{{ program.scope_out or '—' }}</pre></div>
       </div>
+      {% if scope_reasons %}
+      <p class="muted" style="margin-top:10px">Decision reasons:
+        {% for reason, count in scope_reasons|dictsort %}<span class="chip mono">{{ reason }} ×{{ count }}</span>{% endfor %}
+      </p>
+      {% endif %}
     </section>
     {% endif %}
 
@@ -51,6 +61,10 @@
             <label>Out of scope<textarea name="scope_out" rows="6">{{ program.scope_out or '' }}</textarea></label>
           </div>
           <label>Notes<textarea name="notes" rows="3">{{ program.notes or '' }}</textarea></label>
+          <label>Finding severity overrides
+            <textarea name="rule_severities" rows="4" placeholder="template-id=critical&#10;tech-detect=info">{{ rule_severities_text }}</textarea>
+          </label>
+          <p class="dim">One <code>rule-id=severity</code> per line (nuclei template-id or BBOT finding name). The parser's original severity is kept for audit; remove a line to revert it.</p>
           <div class="row">
             <button class="primary" type="submit">Save &amp; rebuild</button>
           </div>

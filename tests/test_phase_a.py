@@ -208,8 +208,10 @@ def test_entity_api_pagination():
 
 # ----------------------------------------------------------- doctor/demo -----
 def test_doctor_reports_actionable_checks():
+    from app.db import SCHEMA_VERSION
+
     report = doctor.run_checks()
-    assert report["schema_version"] == 5
+    assert report["schema_version"] == SCHEMA_VERSION
     names = {check["name"] for check in report["checks"]}
     assert {"python", "sqlite", "database_integrity", "schema_version", "parsers"} <= names
     assert all(check["status"] in {"ok", "warn", "fail"} for check in report["checks"])

@@ -239,6 +239,7 @@ class BbotParser(Parser):
                     "evidence": evidence,
                     "target": target,
                     "tags": item.get("tags") or [],
+                    "rule_id": str(item.get("name") or title),
                     "dedup_key": f"bbot|{etype}|{title}|{target}|{evidence}",
                 }
             )

@@ -10,11 +10,14 @@
       {% for e in items %}
       <tr>
         <td class="mono">{{ e.value }}
-          {% if e.scope_status == 'in' %}<span class="badge in">in</span>
-          {% elif e.scope_status == 'out' %}<span class="badge out">out</span>{% endif %}
+          {% if e.scope_status == 'in' %}<span class="badge in" title="scope: {{ e.scope_reason or 'in_rule' }}">in</span>
+          {% elif e.scope_status == 'out' %}<span class="badge out" title="scope: {{ e.scope_reason or 'out_rule' }}">out</span>
+          {% elif e.scope_reason %}<span class="badge" title="scope: {{ e.scope_reason }}">unknown</span>{% endif %}
+          {% if e.status_code %}<span class="chip mono" title="observed HTTP status">{{ e.status_code }}</span>{% endif %}
           {% if e.occurrences and e.occurrences > 1 %}<span class="badge x">×{{ e.occurrences }}</span>{% endif %}
           {% if e.verdict and e.verdict != 'none' %}<span class="badge v-{{ e.verdict }}">{{ e.verdict }}</span>{% endif %}
-          {% if e.cross_programs %}<span class="badge seen" title="Also seen in: {{ e.cross_programs|map(attribute='name')|join(', ') }}">seen ×{{ e.cross_programs|length }}</span>{% endif %}
+          {% if e.cross_programs %}<a class="badge seen" href="/ledger/asset?type={{ e.type }}&value={{ e.value|urlencode }}" title="Also seen in: {{ e.cross_programs|map(attribute='name')|join(', ') }}">seen ×{{ e.cross_programs|length }}</a>{% endif %}
+          {% if e.scope_status == 'out' and e.program_id %}<a class="chip" href="/programs/{{ e.program_id }}/scope?type={{ e.type }}&value={{ e.value|urlencode }}" title="Why is this out of scope?">why?</a>{% endif %}
           {% for t in (e.tags or []) %}<span class="chip tag">{{ t }}</span>{% endfor %}
         </td>
         <td class="muted">

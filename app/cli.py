@@ -943,6 +943,204 @@ def cmd_history(args) -> int:
     return 0
 
 
+def cmd_ledger(args) -> int:
+    """Cross-program memory: list, inspect, export, save views, import."""
+    from . import ledger as ledger_mod
+
+    init_db()
+    action = getattr(args, "action", "list")
+    with Session(engine) as session:
+        if action == "list":
+            filters = ledger_mod.parse_query(args.query or "")
+            page = ledger_mod.ledger_assets(
+                session, filters, limit=args.limit, offset=args.offset
+            )
+            if args.json:
+                print(json.dumps(page, default=str, indent=2))
+                return 0
+            print(f"{page['total']} asset(s) matching {args.query or '(all)'}")
+            for asset in page["assets"]:
+                programs = ", ".join(p["name"] for p in asset["programs"]) or "—"
+                tags = " ".join(f"#{tag}" for tag in asset["tags"])
+                print(
+                    f"  {asset['type']:<12} {asset['value'][:70]:<72} "
+                    f"[{programs}] {tags}".rstrip()
+                )
+            if page["next_offset"] is not None:
+                print(f"next offset: {page['next_offset']}")
+            return 0
+
+        if action == "export":
+            filters = ledger_mod.parse_query(args.query or "")
+            page = ledger_mod.ledger_assets(
+                session, filters, limit=args.limit, offset=args.offset
+            )
+            if (args.format or "jsonl").lower() == "csv":
+                body = ledger_mod.assets_to_csv(page["assets"])
+            else:
+                body = ledger_mod.assets_to_jsonl(page["assets"])
+            if args.output:
+                Path(args.output).write_text(body, encoding="utf-8")
+                print(f"wrote {len(page['assets'])} asset(s) to {args.output}")
+            else:
+                print(body, end="")
+            return 0
+
+        if action == "show":
+            timeline = ledger_mod.asset_timeline(session, args.type, args.value)
+            if timeline is None:
+                print(f"ledger: {args.type} {args.value!r} not found", file=sys.stderr)
+                return 1
+            if args.json:
+                print(json.dumps(timeline, default=str, indent=2))
+                return 0
+            print(
+                f"{timeline['type']} {timeline['value']} — "
+                f"{len(timeline['sightings'])} sighting(s), "
+                f"{timeline['program_count']} program(s), "
+                f"{timeline['capture_count']} capture(s)"
+            )
+            for sighting in timeline["sightings"]:
+                program = (sighting.get("program") or {}).get("name", "—")
+                capture = (sighting.get("capture") or {}).get("id")
+                print(
+                    f"  {sighting['created_at'][:16] if sighting.get('created_at') else '?':<18} "
+                    f"{program:<24} capture #{capture if capture is not None else '—':<6} "
+                    f"{sighting.get('scope_status', '?')}"
+                )
+            return 0
+
+        if action == "views":
+            views = ledger_mod.list_views(session, args.kind or None)
+            if args.json:
+                print(json.dumps([v.model_dump() for v in views], default=str, indent=2))
+                return 0
+            for view in views:
+                print(f"  #{view.id:<4} {view.kind:<8} {view.name:<32} {view.query}")
+            return 0
+
+        if action == "save-view":
+            try:
+                view = ledger_mod.save_view(
+                    session, args.name, kind=args.kind or "ledger", query=args.query or ""
+                )
+            except ValueError as exc:
+                print(f"ledger: {exc}", file=sys.stderr)
+                return 1
+            print(f"saved view #{view.id}: {view.name} ({view.kind})")
+            return 0
+
+        if action == "delete-view":
+            if not ledger_mod.delete_view(session, args.view_id):
+                print(f"ledger: view #{args.view_id} not found", file=sys.stderr)
+                return 1
+            print(f"deleted view #{args.view_id}")
+            return 0
+
+        if action == "import":
+            return _ledger_import(args)
+
+    print(f"ledger: unknown action {action!r}", file=sys.stderr)
+    return 2
+
+
+def _ledger_import(args) -> int:
+    """Round-trip a Ledger JSONL export into one or more programs."""
+    from .ingest import IngestRequest, ingest
+    from .models import Program
+    from .parsers.ledger_jsonl import _rows
+
+    text = _read_input(args.query or "")
+    rows = _rows(text)
+    if not rows:
+        print("ledger import: no JSONL rows found", file=sys.stderr)
+        return 1
+    init_db()
+    with Session(engine) as session:
+        programs: dict[str, int] = {}
+        if args.program:
+            program = session.get(Program, args.program)
+            if program is None:
+                print(f"ledger import: program #{args.program} not found", file=sys.stderr)
+                return 1
+            programs[program.name] = program.id
+            groups = {program.id: rows}
+        else:
+            groups: dict[int, list[dict]] = {}
+            for row in rows:
+                names = [
+                    str(item.get("name") or "").strip()
+                    for item in (row.get("programs") or [])
+                    if isinstance(item, dict)
+                ]
+                names = [name for name in names if name] or [args.program_name]
+                for name in names:
+                    if name not in programs:
+                        program = session.exec(
+                            select(Program).where(Program.name == name)
+                        ).first()
+                        if program is None:
+                            program = Program(name=name)
+                            session.add(program)
+                            session.commit()
+                            session.refresh(program)
+                        programs[name] = program.id
+                    groups.setdefault(programs[name], []).append(row)
+        total_entities = 0
+        for program_id, program_rows in groups.items():
+            body = "\n".join(json.dumps(row, default=str) for row in program_rows) + "\n"
+            result = ingest(
+                session,
+                IngestRequest(
+                    text=body,
+                    program_id=program_id,
+                    source="ledger-import",
+                    command=f"breadcrumb ledger import {args.query}",
+                    source_meta={"format": "ledger-jsonl"},
+                ),
+            )
+            total_entities += result.entities
+            print(
+                f"  program #{program_id}: {result.entities} entities, "
+                f"{result.findings} findings, completeness {result.completeness:.0%}"
+            )
+        print(f"imported {total_entities} ledger entities across {len(groups)} program(s)")
+    return 0
+
+
+def cmd_diff(args) -> int:
+    """Compare two captures/targets/programs/jobs."""
+    from . import diff as diff_mod
+
+    init_db()
+    with Session(engine) as session:
+        try:
+            result = diff_mod.diff_selectors(session, args.left, args.right)
+        except ValueError as exc:
+            print(f"diff: {exc}", file=sys.stderr)
+            return 1
+    if args.notify:
+        from . import notify
+
+        outcome = notify.notify_diff(
+            notify.load_config(),
+            f"{result['left']['label']} → {result['right']['label']}",
+            result["summary"],
+        )
+        if not outcome.get("sent"):
+            print(f"notify: {outcome.get('reason', 'not sent')}", file=sys.stderr)
+    if args.json or (args.format or "").lower() == "json":
+        body = json.dumps(result, default=str, indent=2) + "\n"
+    else:
+        body = diff_mod.diff_to_markdown(result)
+    if args.output:
+        Path(args.output).write_text(body, encoding="utf-8")
+        print(f"wrote diff to {args.output}")
+    else:
+        print(body, end="")
+    return 0
+
+
 def _snapshot_markdown(job, data: dict, findings: list[dict]) -> str:
     summary = data.get("severity_counts") or {}
     lines = [
@@ -1198,6 +1396,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="keep false-positive findings (internal reports)",
     )
     p.set_defaults(func=cmd_report)
+
+    p = sub.add_parser("diff", help="compare two captures, targets, programs, or jobs")
+    p.add_argument("left", help="left selector, e.g. paste:12, target:3, program:1, job:9")
+    p.add_argument("right", help="right selector")
+    p.add_argument("--format", default="md", choices=["md", "json"], help="output format")
+    p.add_argument("--json", action="store_true", help="alias for --format json")
+    p.add_argument("-o", "--output", default="")
+    p.add_argument("--notify", action="store_true", help="send the diff to configured alert channels")
+    p.set_defaults(func=cmd_diff)
+
+    p = sub.add_parser("ledger", help="cross-program asset memory")
+    p.add_argument(
+        "action",
+        choices=["list", "show", "export", "views", "save-view", "delete-view", "import"],
+    )
+    p.add_argument("query", nargs="?", default="", help="filter query (list/export)")
+    p.add_argument("--type", default="", help="asset type (show)")
+    p.add_argument("--value", default="", help="asset value (show)")
+    p.add_argument("--format", default="jsonl", choices=["jsonl", "csv"], help="export format")
+    p.add_argument("--limit", type=int, default=100)
+    p.add_argument("--offset", type=int, default=0)
+    p.add_argument("-o", "--output", default="", help="write export to a file")
+    p.add_argument("--name", default="", help="saved view name")
+    p.add_argument("--kind", default="ledger", choices=["ledger", "diff", "graph"])
+    p.add_argument("--view-id", type=int, default=0, help="view id (delete-view)")
+    p.add_argument("--program", type=int, default=None, help="import into this program")
+    p.add_argument("--program-name", default="Ledger import", help="program for rows without provenance")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_ledger)
 
     p = sub.add_parser("maintenance", help="pause or resume native worker claims")
     p.add_argument("action", choices=["on", "off"])

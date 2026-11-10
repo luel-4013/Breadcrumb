@@ -73,8 +73,10 @@ First report in five minutes:
   **BBOT JSON/JSONL** (DNS, IPs, ports, URLs, technologies, findings),
   naabu/masscan port output, subfinder-style hosts, URLs, DNS records, HTTP
   headers, JWTs, AWS-style secrets, credentials, hashes, CVEs, emails, IPs/CIDRs,
-  **ffuf JSON**, **Dalfox JSON/JSONL**, **Amass JSON**, **WhatWeb JSON** and
-  **wafw00f JSON**. Re-importing tool output never duplicates findings.
+  **ffuf JSON**, **Dalfox JSON/JSONL**, **Amass JSON**, **WhatWeb JSON**,
+  **wafw00f JSON**, and **Ledger JSONL** (parser `ledger_jsonl`: round-trip
+  import of an exported memory slice). Re-importing tool output never
+  duplicates findings.
 - **Import trust, not silent drops**: every capture produces a machine-readable
   import report with parser versions, completeness, skipped rows, warnings and
   a “why zero entities” hint. `GET /api/v1/pastes/{id}/report` or
@@ -97,13 +99,35 @@ First report in five minutes:
   in/out/unknown scope; targets are **auto-created from scope** and entities are
   attributed to targets automatically. Programs and targets are fully editable /
   deletable from the UI.
-- **Knowledge graph**: typed nodes and edges (runs, resolves_to, belongs_to…)
-  with an SVG view and per-target clusters (large clusters are summarized, not
-  rendered, so huge programs stay fast).
+- **Cross-program memory (the Ledger, v2)**: every asset is remembered across
+  *all* programs. The Ledger groups by `(type, normalized)`, shows first/last
+  sighting, every program/target/capture that observed it, analyst verdicts,
+  tags and notes, and links to a full asset timeline. Filter with
+  `type:port scope:in tag:needs-auth seen:other-program status:200`, save the
+  view locally, and export the slice as JSONL (round-trips through ingest) or
+  CSV. A host seen in program A is surfaced in program B with links to both.
+- **Diff v2**: compare any two captures (`paste:`), targets (`target:`),
+  programs (`program:`) or scan jobs (`job:`). Categories: findings (new,
+  disappeared, changed, still open), entities, ports, DNS, endpoints,
+  technologies, security headers, and risk. Open `/diff`, call
+  `GET /api/v1/diff?left=program:1&right=program:2`, or use
+  `breadcrumb diff ... --format md`; send change alerts through the existing
+  notification channels.
+- **Scope v2**: status-code filters (`example.com status:200,204`), path-prefix
+  rules (`example.com/admin/*`, negative `!example.com/private`), and per-rule
+  severity overrides. Every entity gets an explainable decision with a stable
+  reason code (`in_rule`, `out_rule`, `status_filter`, `status_unknown`,
+  `no_match`, `no_scope`, `no_host`, `in_negated`, `re_included`). The Scope
+  page shows "why is this out of scope?", supports bulk re-scope that appends
+  durable rules, and never silently drops unknown-status assets.
+- **Knowledge graph v2**: typed nodes and edges (runs, resolves_to, belongs_to…)
+  with an SVG view, per-target clusters, saved graph views, and a
+  **seen-in-other-programs** section that links shared assets to Ledger
+  timelines. Large clusters are summarized, not rendered, so huge programs stay
+  fast.
 - **Change detection**: each program has a *Changes* view — latest capture vs
   everything before it (new + disappeared), Amass-`track` style — plus
-  per-target snapshot timelines and scan-to-scan diffs (findings, ports, DNS,
-  endpoints, technologies, headers, risk).
+  per-target snapshot timelines and the v2 cross-selector diff above.
 - **Triage & accuracy**: mark entities *confirmed*, *needs-review*, or
   *false-positive*; add tags and private notes to entities and findings; ignore
   noise without deleting. False positives and ignored rows never appear in
@@ -227,6 +251,51 @@ too-large models remain selectable with a warning. The picker can assign a
 model to one route or all four routes; per-job overrides come with the scanning
 work.
 
+## Cross-program memory, diff, and scope cookbook
+
+**Have I seen this before?** Import the same host into two programs, then open
+`/ledger` or run `breadcrumb ledger show --type subdomain --value app.example.com`.
+The timeline lists every capture, program and target that observed it. The same
+asset appears in the other program's graph under *Seen in other programs*. Use
+the `seen:other-program` filter to list only assets that crossed a program
+boundary.
+
+**Export a slice and bring it back.** `breadcrumb ledger export "tag:needs-auth"
+-o auth.jsonl` writes one JSON object per asset. `breadcrumb ledger import
+auth.jsonl` reads it through the normal ingest path, recreating programs from
+the export's provenance and preserving verdicts, tags, notes, observed status
+codes, and occurrence counts. Importing is additive and idempotent; scope is
+recomputed for the destination program instead of trusting the file.
+
+**What changed?** Compare captures, targets, programs or jobs:
+
+```bash
+breadcrumb diff paste:41 paste:57                  # two tool runs
+breadcrumb diff program:1 program:2                # two engagements
+breadcrumb diff job:9 job:14 --format md -o diff.md
+breadcrumb diff job:14 --right program:1 --notify  # alert configured channels
+```
+
+Job selectors use the sealed scan snapshot, so the comparison is point-in-time
+and not polluted by later imports. Capture/target/program selectors use live
+evidence state. Findings marked false-positive are excluded; "still open" means
+the same finding is active on both sides.
+
+**Why is this out of scope?** Open `/programs/1/scope` and filter by
+`status_filter` (or click *why?* next to an entity). The rule line that decided
+the asset is shown verbatim. A status filter only decides entities whose HTTP
+status is known: a URL with no observed status becomes `status_unknown`, not a
+silent drop. Status filters compose with path rules, so
+`example.com/admin/* status:200` scopes only successful admin paths. Bulk
+re-scope appends selected hostnames to the program's in/out text and rebuilds,
+which makes the decision durable and visible in the scope editor.
+
+**Per-rule severity overrides.** In the program editor, add one
+`rule-id=severity` line per nuclei template or BBOT finding name. Overrides are
+applied on import and on *Save & rebuild*; the parser's original severity stays
+in `Finding.meta.parser_severity` and `severity_override` records the change.
+Remove a line to revert.
+
 ## CLI
 
 ```bash
@@ -247,6 +316,11 @@ python -m app.cli backup -o nightly.db
 python -m app.cli worker --poll 2 --lease 120      # durable native/adapter worker
 python -m app.cli collect example.com --program 1 --collector leadline-recon
 python -m app.cli history 1 --diff                  # target timeline/diff
+python -m app.cli diff paste:4 paste:5              # cross-selector diff (md/json)
+python -m app.cli ledger list "seen:other-program"  # cross-program memory
+python -m app.cli ledger show --type subdomain --value app.example.com
+python -m app.cli ledger export "tag:needs-auth" -o auth.jsonl
+python -m app.cli ledger import auth.jsonl          # additive round-trip
 python -m app.cli report 1 --format pdf -o report.pdf
 python -m app.cli import-leadline --db /path/to/leadline.db --dry-run
 ```
@@ -267,6 +341,11 @@ curl '/api/v1/doctor'                   # diagnostics (200 ok, 503 failure)
 curl '/api/v1/entities?program_id=1&type=subdomain&limit=100&offset=0'
 curl '/api/v1/findings?program_id=1&min_severity=high'
 curl /api/v1/programs
+
+# cross-program memory + cross-selector diff
+curl '/api/v1/ledger?q=type:port%20seen:other-program&limit=50'
+curl '/api/v1/ledger/asset?type=subdomain&value=app.example.com'
+curl '/api/v1/diff?left=program:1&right=program:2'
 
 # bulk triage (ignore | unignore | delete | tag | untag | verdict)
 curl -X POST /api/v1/entities/bulk -H 'Content-Type: application/json' \
@@ -307,7 +386,7 @@ reverse proxy.
 - **0.5.0 — Proof:** parser contract, import reports/completeness, Manifest v2,
   `breadcrumb doctor`, sample demo, benchmark harness. Implemented.
 - **0.6.0 — Memory:** Ledger v2, diff v2, scope v2 (status-code/path/rule),
-  graph v2, saved views.
+  graph v2, saved views. Implemented.
 - **0.7.0 — Report:** templates, redaction, review bundle, HackerOne/DefectDojo
   exports validated against test instances.
 - **0.8.0 — Automate:** scheduled re-import, local parser SDK, stable API
@@ -315,8 +394,11 @@ reverse proxy.
 - **0.9.0 — Capture:** optional screenshot import and adapter hardening.
 - **1.0.0 — Flagship:** security/migration/rollback/soak gates and docs.
 
-See [docs/IMPORT_COOKBOOK.md](docs/IMPORT_COOKBOOK.md) and
-[docs/MANIFEST_AND_DOCTOR.md](docs/MANIFEST_AND_DOCTOR.md).
+See [docs/IMPORT_COOKBOOK.md](docs/IMPORT_COOKBOOK.md),
+[docs/MANIFEST_AND_DOCTOR.md](docs/MANIFEST_AND_DOCTOR.md),
+[docs/CROSS_PROGRAM_MEMORY.md](docs/CROSS_PROGRAM_MEMORY.md),
+[docs/DIFF_COOKBOOK.md](docs/DIFF_COOKBOOK.md) and
+[docs/SCOPE_DECISIONS.md](docs/SCOPE_DECISIONS.md).
 
 ## Contributing
 

@@ -14,7 +14,7 @@ DB_PATH = Path(
 # Bump when a migration changes the on-disk contract. The value is recorded in
 # appstate so backups/restores and future migrations can be versioned
 # explicitly instead of inferred from column presence.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 engine = create_engine(
     f"sqlite:///{DB_PATH}",
@@ -54,6 +54,8 @@ def _sqlite_pragmas(dbapi_connection, _connection_record) -> None:
 MIGRATIONS = {
     "entity": {
         "scope_status": "TEXT DEFAULT 'unknown'",
+        "scope_reason": "TEXT DEFAULT ''",
+        "status_code": "INTEGER",
         "occurrences": "INTEGER DEFAULT 1",
         "provenance": "TEXT DEFAULT '[]'",
         "ignored": "INTEGER DEFAULT 0",
@@ -74,6 +76,7 @@ MIGRATIONS = {
         "ai_summary": "TEXT",
         "ai_model": "TEXT",
         "ai_at": "DATETIME",
+        "rule_severities": "TEXT DEFAULT '{}'",
     },
     "target": {
         "meta": "TEXT DEFAULT '{}'",
@@ -119,6 +122,7 @@ MIGRATIONS = {
         "notes": "TEXT",
         "updated_at": "DATETIME",
         "fingerprint": "TEXT",
+        "rule_id": "TEXT",
         "source_tool": "TEXT",
         "paste_id": "INTEGER",
         "verdict": "TEXT DEFAULT 'none'",
@@ -136,6 +140,7 @@ INDEXES = [
     ("ix_entity_program_type", "entity (program_id, type)"),
     ("ix_entity_program_ignored", "entity (program_id, ignored)"),
     ("ix_entity_program_scope", "entity (program_id, scope_status)"),
+    ("ix_entity_program_status_code", "entity (program_id, status_code)"),
     ("ix_entity_paste", "entity (paste_id)"),
     ("ix_entity_verdict", "entity (verdict)"),
     ("ix_entity_scope_status", "entity (scope_status)"),
@@ -144,6 +149,7 @@ INDEXES = [
     ("ix_relationship_program", "relationship (program_id)"),
     ("ix_finding_program", "finding (program_id)"),
     ("ix_finding_fingerprint", "finding (fingerprint)"),
+    ("ix_finding_rule", "finding (rule_id)"),
     ("ix_finding_paste", "finding (paste_id)"),
     ("ix_paste_program", "paste (program_id)"),
     ("ix_paste_program_created", "paste (program_id, created_at)"),
@@ -157,6 +163,7 @@ INDEXES = [
     ("ix_scansnapshot_job", "scansnapshot (job_id)"),
     ("ix_scansnapshot_target", "scansnapshot (target_id, id)"),
     ("ix_scansnapshot_program", "scansnapshot (program_id, id)"),
+    ("ix_savedview_kind_name", "savedview (kind, name)"),
 ]
 
 # A linear hash chain means each capture has at most one successor. These

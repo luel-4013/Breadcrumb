@@ -4,7 +4,60 @@ All notable changes to Breadcrumb are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The Leadline merge is the **0.4.0** release; **0.5.0** is the Phase A “Proof”
-release. The version in `app/__init__.py` is `0.5.0`.
+release; **0.6.0** is the Phase B “Memory” release. The version in
+`app/__init__.py` is `0.6.0`.
+
+## [0.6.0] — 2026-11-10
+
+Phase B makes cross-program memory and change detection the product’s center of
+gravity: the Ledger remembers every asset, Diff v2 compares any two slices, and
+Scope v2 explains every in/out decision.
+
+### Added — Ledger v2
+
+- Cross-program asset aggregation by `(type, normalized)` with first/last
+  sighting, occurrences, confidence, programs, targets and captures.
+- `/ledger` filter language: `type:`, `scope:`, `tag:`, `verdict:`,
+  `program:`, `status:`, `seen:other-program|single`, `sort:`, `q:`.
+- Asset timeline at `/ledger/asset?type=…&value=…` (JSON at
+  `/api/v1/ledger/asset`) with per-sighting annotations.
+- JSONL/CSV export at `/ledger/export`; JSON API at `/api/v1/ledger`.
+- Saved views (`kind=ledger|diff|graph`) with a local `savedview` table.
+- `ledger_jsonl` parser and `breadcrumb ledger import` for additive,
+  idempotent round-trips that preserve verdicts, tags, notes and status codes.
+
+### Added — Diff v2
+
+- `app/diff.py`: selectors `paste:`, `target:`, `program:`, `job:` and
+  categories findings, entities, ports, DNS, endpoints, technologies, security
+  headers and risk.
+- New `/diff` UI, `GET /api/v1/diff`, `POST /diff/notify`, saved comparisons,
+  and `breadcrumb diff` with Markdown/JSON output.
+- Job selectors use sealed history snapshots; entity-level comparison is
+  explicitly unavailable for snapshot-vs-live comparisons instead of silently
+  wrong.
+
+### Added — Scope v2
+
+- Status-code filters (`status:200,204`) composed with host/path rules.
+- Negated path rules and stable, explainable reason codes on every entity
+  (`scope_reason`).
+- `/programs/<id>/scope` decision table, “why is this out of scope?” focus,
+  reason/status filters and bulk re-scope that appends durable rules.
+- Per-rule severity overrides stored on the program, applied at ingest and
+  re-applied on save; original severity retained for audit.
+
+### Added — Graph v2
+
+- Cross-program “seen in other programs” section on the program graph, linked
+  to Ledger timelines.
+- Saved graph views and existing large-cluster caps preserved.
+
+### Schema
+
+- Schema version 6 adds `Entity.scope_reason`, `Entity.status_code`,
+  `Finding.rule_id`, `Program.rule_severities` and the `savedview` table.
+  Migration is additive; existing captures and findings are not rewritten.
 
 ## [0.5.0] — 2026-11-09
 

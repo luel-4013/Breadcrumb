@@ -9,6 +9,12 @@ class Entity:
     confidence: float = 1.0
     meta: dict = field(default_factory=dict)
     parser: str = ""
+    # Optional analyst/provenance fields used by the Ledger JSONL importer.
+    # Ordinary parsers leave these at their defaults.
+    status_code: int | None = None
+    tags: list = field(default_factory=list)
+    verdict: str = "none"
+    notes: str = ""
 
     def __post_init__(self) -> None:
         if not self.normalized:

@@ -12,7 +12,7 @@ from sqlmodel import Session, select
 
 from .graph import derive_edges
 from .models import Entity, Program, Relationship, Target
-from .scope import Scope, host_of
+from .scope import Scope, ScopeDecision, host_of, status_code_of
 
 HOST_LIKE = {"domain", "subdomain", "wildcard", "ip", "cidr"}
 
@@ -32,11 +32,46 @@ def entity_host(entity) -> str:
     return ""
 
 
+def _scope_inputs(entity) -> tuple[str, str, str, int | None]:
+    """Return (value, vtype, host, status_code) for a scope decision.
+
+    Paths and params carry their host in meta; reconstructing the URL lets the
+    path rules and status filters see the full value instead of a bare host.
+    """
+    etype = getattr(entity, "type", "") or ""
+    meta = getattr(entity, "meta", None) or {}
+    code = getattr(entity, "status_code", None)
+    if code is None:
+        code = status_code_of(getattr(entity, "value", "") or "", etype, meta)
+    if etype == "dns_record":
+        name = str(meta.get("name") or "")
+        return name, "domain", host_of(name, "domain"), code
+    if etype in {"path", "param"}:
+        value = str(getattr(entity, "value", "") or "")
+        host = str(meta.get("host") or "").lower()
+        if host and value.startswith("/"):
+            return f"https://{host}{value}", "url", host, code
+        return value, "path", host, code
+    if etype == "port":
+        host = str(meta.get("host") or "").lower()
+        return str(getattr(entity, "value", "") or ""), "port", host, code
+    if etype in {"secret", "credential", "jwt"}:
+        host = str(meta.get("host") or "").lower()
+        return host or str(getattr(entity, "value", "") or ""), "domain", host, code
+    if etype == "http_status":
+        url = str(meta.get("url") or meta.get("host") or getattr(entity, "value", "") or "")
+        return url, "url", host_of(url, "url"), code
+    value = str(getattr(entity, "value", "") or "")
+    return value, etype, host_of(value, etype), code
+
+
+def scope_decision(scope: Scope, entity) -> ScopeDecision:
+    value, vtype, host, code = _scope_inputs(entity)
+    return scope.explain(value, vtype, status_code=code, host=host)
+
+
 def classify_scope(scope: Scope, entity) -> str:
-    host = entity_host(entity)
-    if not host:
-        return "unknown"
-    return scope.status(host, "ip" if _is_ip(host) else "domain")
+    return scope_decision(scope, entity).status
 
 
 def _is_ip(value: str) -> bool:
@@ -120,6 +155,8 @@ def consolidate_entities(session: Session, program_id) -> int:
             for pid in extra.provenance or []:
                 if pid not in provenance:
                     provenance.append(pid)
+            if keep.status_code is None and extra.status_code is not None:
+                keep.status_code = extra.status_code
             for k, v in (extra.meta or {}).items():
                 meta.setdefault(k, v)
             for rel in session.exec(
@@ -163,9 +200,17 @@ def rebuild_program(session: Session, program_id: int) -> dict:
     entity_by_key: dict[tuple[str, str], Entity] = {}
     target_ids = {t.id for t in targets}
     in_scope = out_scope = unknown = attributed = 0
+    reason_counts: dict[str, int] = {}
     for entity in entities:
-        status = classify_scope(scope, entity)
+        decision = scope_decision(scope, entity)
+        status = decision.status
         entity.scope_status = status
+        entity.scope_reason = decision.reason
+        reason_counts[decision.reason] = reason_counts.get(decision.reason, 0) + 1
+        if entity.status_code is None:
+            entity.status_code = status_code_of(
+                entity.value or "", entity.type, entity.meta or {}
+            )
         if status == "in":
             in_scope += 1
         elif status == "out":
@@ -231,6 +276,7 @@ def rebuild_program(session: Session, program_id: int) -> dict:
         "unknown": unknown,
         "attributed": attributed,
         "derived_edges": made,
+        "scope_reasons": reason_counts,
     }
 
 

@@ -32,9 +32,11 @@ from sqlmodel import Session, func, select
 from . import (
     __version__,
     ai,
+    diff as diff_mod,
     graph,
     headers_gen,
     history,
+    ledger as ledger_mod,
     llm,
     notify,
     pdf_export,
@@ -82,6 +84,7 @@ from .models import (
     Target,
 )
 from .parsers import analyze
+from .scope import format_severity_overrides
 
 APP_VERSION = __version__
 
@@ -440,6 +443,10 @@ def program_view(program_id: int, request: Request, session: Session = Depends(g
     }
     unattributed = [e for e in entities if e.target_id is None]
     triage_states = {finding.id: triage.triage_status(finding) for finding in findings}
+    scope_reasons: dict[str, int] = {}
+    for entity in entities:
+        key = entity.scope_reason or "unknown"
+        scope_reasons[key] = scope_reasons.get(key, 0) + 1
     return templates.TemplateResponse(
         request,
         "program.html",
@@ -453,6 +460,8 @@ def program_view(program_id: int, request: Request, session: Session = Depends(g
             findings=findings,
             triage_states=triage_states,
             scope_counts=scope_counts,
+            scope_reasons=scope_reasons,
+            rule_severities_text=format_severity_overrides(program.rule_severities),
             unattributed=unattributed,
         ),
     )
@@ -582,11 +591,49 @@ def program_graph(
             node_type=node_type,
             node_types=graph.NODE_TYPES,
             path_tree=path_tree,
+            shared_assets=ledger_mod.shared_assets(session, program_id, limit=100),
+            views=ledger_mod.list_views(session, "graph"),
             visible_entities=len(entities),
             total_entities=len(all_entities),
             filter_active=filter_active,
         ),
     )
+
+
+@app.post("/programs/{program_id}/graph/views")
+def save_graph_view(
+    program_id: int,
+    name: str = Form(...),
+    q: str = Form(""),
+    node_type: str = Form(""),
+    session: Session = Depends(get_session),
+):
+    if session.get(Program, program_id) is None:
+        raise HTTPException(status_code=404, detail="Program not found")
+    try:
+        ledger_mod.save_view(
+            session,
+            name,
+            kind="graph",
+            query=f"{q} {node_type}".strip(),
+            params={"program_id": program_id, "q": q, "node_type": node_type},
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return RedirectResponse(
+        f"/programs/{program_id}/graph?q={quote(q)}&node_type={quote(node_type)}",
+        status_code=303,
+    )
+
+
+@app.post("/programs/{program_id}/graph/views/{view_id}/delete")
+def delete_graph_view(
+    program_id: int,
+    view_id: int,
+    session: Session = Depends(get_session),
+):
+    ledger_mod.delete_view(session, view_id)
+    return RedirectResponse(f"/programs/{program_id}/graph", status_code=303)
 
 
 @app.get("/targets/{target_id}/history", response_class=HTMLResponse)
@@ -693,8 +740,12 @@ def update_program(
     scope_in: str = Form(""),
     scope_out: str = Form(""),
     notes: str = Form(""),
+    rule_severities: str | None = Form(None),
     session: Session = Depends(get_session),
 ):
+    from .ingest import reapply_severity_overrides
+    from .scope import parse_severity_overrides
+
     program = session.get(Program, program_id)
     if program is None:
         raise HTTPException(status_code=404, detail="Program not found")
@@ -704,10 +755,16 @@ def update_program(
     program.scope_in = scope_in.strip() or None
     program.scope_out = scope_out.strip() or None
     program.notes = notes.strip() or None
+    # ``None`` means an older client/API caller omitted the field: preserve
+    # existing overrides. The browser form always sends the field (empty to
+    # clear), so the UI remains authoritative.
+    if rule_severities is not None:
+        program.rule_severities = parse_severity_overrides(rule_severities)
     session.add(program)
     session.commit()
     _ensure_targets_from_scope(session, program)
     rebuild_program(session, program_id)
+    reapply_severity_overrides(session, program_id)
     return RedirectResponse(f"/programs/{program_id}", status_code=303)
 
 
@@ -1058,44 +1115,345 @@ def notify_changes_route(program_id: int, session: Session = Depends(get_session
 
 
 @app.get("/ledger", response_class=HTMLResponse)
-def ledger_view(request: Request, session: Session = Depends(get_session)):
-    """Cross-program asset memory: assets seen in more than one program."""
-    rows = session.exec(
-        select(
-            Entity.type,
-            func.lower(Entity.normalized),
-            func.min(Entity.value),
-            func.count(func.distinct(Entity.program_id)),
-        )
-        .where(Entity.program_id != None)  # noqa: E711
-        .group_by(Entity.type, func.lower(Entity.normalized))
-        .having(func.count(func.distinct(Entity.program_id)) > 1)
-        .order_by(func.count(func.distinct(Entity.program_id)).desc())
-        .limit(500)
-    ).all()
-    names = {p.id: p.name for p in session.exec(select(Program)).all()}
-    norms = [r[1] for r in rows]
-    progs: dict[tuple[str, str], set] = {}
-    if norms:
-        for t, n, pid in session.exec(
-            select(Entity.type, func.lower(Entity.normalized), Entity.program_id)
-            .where(Entity.program_id != None, func.lower(Entity.normalized).in_(norms))  # noqa: E711
-        ).all():
-            progs.setdefault((t, n), set()).add(pid)
-    assets = []
-    for t, n, value, count in rows:
-        ids = sorted(progs.get((t, n), set()))
-        assets.append({
-            "type": t,
-            "value": value,
-            "count": count,
-            "programs": [{"id": i, "name": names.get(i, f"#{i}")} for i in ids],
-        })
+def ledger_view(
+    request: Request,
+    q: str = "",
+    view: int = 0,
+    limit: int = 100,
+    offset: int = 0,
+    session: Session = Depends(get_session),
+):
+    """Cross-program asset memory: timeline, filters, exports, saved views."""
+    selected_view = ledger_mod.get_view(session, view) if view else None
+    if selected_view is not None and selected_view.kind == "ledger":
+        q = selected_view.query
+    filters = ledger_mod.parse_query(q)
+    page = ledger_mod.ledger_assets(session, filters, limit=limit, offset=offset)
     return templates.TemplateResponse(
         request,
         "ledger.html",
-        _ctx(assets=assets, program_count=len(names)),
+        _ctx(
+            q=q,
+            page=page,
+            assets=page["assets"],
+            stats=ledger_mod.ledger_stats(session),
+            views=ledger_mod.list_views(session, "ledger"),
+            selected_view=selected_view,
+            prev_offset=max(0, page["offset"] - page["limit"]) if page["offset"] else None,
+        ),
     )
+
+
+@app.get("/ledger/asset", response_class=HTMLResponse)
+def ledger_asset_view(
+    request: Request,
+    type: str = "",
+    value: str = "",
+    session: Session = Depends(get_session),
+):
+    timeline = ledger_mod.asset_timeline(session, type, value)
+    if timeline is None:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return templates.TemplateResponse(
+        request,
+        "asset.html",
+        _ctx(timeline=timeline, type=type, value=value),
+    )
+
+
+@app.get("/ledger/export")
+def ledger_export(
+    q: str = "",
+    format: str = "jsonl",
+    limit: int = 1000,
+    session: Session = Depends(get_session),
+):
+    """Export the current Ledger slice. JSONL round-trips through ingest."""
+    filters = ledger_mod.parse_query(q)
+    page = ledger_mod.ledger_assets(session, filters, limit=max(1, min(limit, 5000)))
+    if (format or "").lower() == "csv":
+        body = ledger_mod.assets_to_csv(page["assets"])
+        return Response(
+            body,
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="ledger.csv"'},
+        )
+    body = ledger_mod.assets_to_jsonl(page["assets"])
+    return Response(
+        body,
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": 'attachment; filename="ledger.jsonl"'},
+    )
+
+
+@app.post("/ledger/views")
+def save_ledger_view(
+    name: str = Form(...),
+    query: str = Form(""),
+    kind: str = Form("ledger"),
+    session: Session = Depends(get_session),
+):
+    try:
+        ledger_mod.save_view(session, name, kind=kind, query=query)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return RedirectResponse(f"/ledger?q={quote(query)}", status_code=303)
+
+
+@app.post("/ledger/views/{view_id}/delete")
+def delete_ledger_view(view_id: int, session: Session = Depends(get_session)):
+    ledger_mod.delete_view(session, view_id)
+    return RedirectResponse("/ledger", status_code=303)
+
+
+@app.get("/api/v1/ledger")
+def api_ledger(
+    q: str = "",
+    limit: int = 100,
+    offset: int = 0,
+    session: Session = Depends(get_session),
+):
+    """Filtered, paginated Ledger assets as JSON."""
+    filters = ledger_mod.parse_query(q)
+    return JSONResponse(ledger_mod.ledger_assets(session, filters, limit=limit, offset=offset))
+
+
+@app.get("/api/v1/ledger/asset")
+def api_ledger_asset(
+    type: str = "",
+    value: str = "",
+    session: Session = Depends(get_session),
+):
+    timeline = ledger_mod.asset_timeline(session, type, value)
+    if timeline is None:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return JSONResponse(timeline)
+
+
+@app.get("/diff", response_class=HTMLResponse)
+def diff_view(
+    request: Request,
+    left: str = "",
+    right: str = "",
+    msg: str = "",
+    session: Session = Depends(get_session),
+):
+    result = None
+    error = ""
+    if left and right:
+        try:
+            result = diff_mod.diff_selectors(session, left, right)
+        except ValueError as exc:
+            error = str(exc)
+    return templates.TemplateResponse(
+        request,
+        "diff.html",
+        _ctx(
+            left=left,
+            right=right,
+            result=result,
+            error=error,
+            msg=msg,
+            groups=diff_mod.selector_options(session),
+            views=ledger_mod.list_views(session, "diff"),
+        ),
+    )
+
+
+@app.get("/api/v1/diff")
+def api_diff(
+    left: str,
+    right: str,
+    session: Session = Depends(get_session),
+):
+    """Machine-readable cross-capture/cross-program diff."""
+    try:
+        return JSONResponse(diff_mod.diff_selectors(session, left, right))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@app.post("/diff/notify")
+def diff_notify(
+    left: str = Form(""),
+    right: str = Form(""),
+    session: Session = Depends(get_session),
+):
+    try:
+        result = diff_mod.diff_selectors(session, left, right)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    outcome = notify.notify_diff(
+        notify.load_config(),
+        f"{result['left']['label']} → {result['right']['label']}",
+        result["summary"],
+    )
+    if outcome.get("sent"):
+        message = f"notified {len(outcome['results'])} channel(s)"
+    else:
+        message = f"not sent ({outcome.get('reason', 'no channels')})"
+    return RedirectResponse(
+        f"/diff?left={quote(left)}&right={quote(right)}&msg={quote(message)}",
+        status_code=303,
+    )
+
+
+@app.post("/diff/views")
+def save_diff_view(
+    name: str = Form(...),
+    left: str = Form(""),
+    right: str = Form(""),
+    session: Session = Depends(get_session),
+):
+    try:
+        ledger_mod.save_view(
+            session,
+            name,
+            kind="diff",
+            query=f"{left} {right}".strip(),
+            params={"left": left, "right": right},
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return RedirectResponse(f"/diff?left={quote(left)}&right={quote(right)}", status_code=303)
+
+
+@app.post("/diff/views/{view_id}/delete")
+def delete_diff_view(view_id: int, session: Session = Depends(get_session)):
+    ledger_mod.delete_view(session, view_id)
+    return RedirectResponse("/diff", status_code=303)
+
+
+@app.get("/programs/{program_id}/scope", response_class=HTMLResponse)
+def program_scope(
+    program_id: int,
+    request: Request,
+    q: str = "",
+    type: str = "",
+    status: str = "",
+    reason: str = "",
+    value: str = "",
+    limit: int = 500,
+    session: Session = Depends(get_session),
+):
+    """Explainable scope decisions plus bulk re-scope.
+
+    Nothing is silently dropped: every entity carries the rule (or the absence
+    of one) that produced its status. The page can add selected hosts to the
+    program's in/out scope text and rebuild, which keeps decisions durable.
+    """
+    from .attribution import scope_decision
+    from .scope import Scope, host_of
+
+    program = session.get(Program, program_id)
+    if program is None:
+        raise HTTPException(status_code=404, detail="Program not found")
+    scope = Scope(program.scope_in or "", program.scope_out or "")
+    entities = session.exec(
+        select(Entity)
+        .where(Entity.program_id == program_id)
+        .order_by(Entity.scope_status, Entity.type, Entity.value)
+    ).all()
+    query = (q or "").strip().lower()
+    status = (status or "").strip().lower()
+    reason = (reason or "").strip()
+    type = (type or "").strip()
+    rows = []
+    counts: dict[str, int] = {}
+    reasons: dict[str, int] = {}
+    for entity in entities:
+        decision = scope_decision(scope, entity)
+        counts[decision.status] = counts.get(decision.status, 0) + 1
+        reasons[decision.reason] = reasons.get(decision.reason, 0) + 1
+        if status and decision.status != status:
+            continue
+        if reason and decision.reason != reason:
+            continue
+        if type and entity.type != type:
+            continue
+        if query and query not in (entity.value or "").lower():
+            continue
+        rows.append({"entity": entity, "decision": decision})
+    focus = None
+    if value:
+        for row in rows:
+            if (row["entity"].value or "") == value:
+                focus = row
+                break
+    total = len(rows)
+    shown = rows[: max(1, min(int(limit), 2000))]
+    return templates.TemplateResponse(
+        request,
+        "scope.html",
+        _ctx(
+            program=program,
+            rows=shown,
+            total=total,
+            shown=len(shown),
+            counts=counts,
+            reasons=dict(sorted(reasons.items())),
+            q=q,
+            type=type,
+            status=status,
+            reason=reason,
+            value=value,
+            focus=focus,
+            scope_in=scope,
+            node_types=sorted({entity.type for entity in entities}),
+        ),
+    )
+
+
+@app.post("/programs/{program_id}/scope/bulk")
+def scope_bulk(
+    program_id: int,
+    action: str = Form("rebuild"),
+    values: list[str] = Form([]),
+    session: Session = Depends(get_session),
+):
+    """Add selected assets to scope text (durable) or rebuild decisions."""
+    from .scope import host_of
+
+    program = session.get(Program, program_id)
+    if program is None:
+        raise HTTPException(status_code=404, detail="Program not found")
+    if action in {"in", "out"}:
+        existing = {
+            line.strip().lower()
+            for line in (program.scope_in or "").splitlines()
+            if line.strip()
+        }
+        out_existing = {
+            line.strip().lower()
+            for line in (program.scope_out or "").splitlines()
+            if line.strip()
+        }
+        additions = []
+        for raw in values:
+            etype, _, val = str(raw).partition("|")
+            val = val.strip()
+            if not val:
+                continue
+            host = host_of(val, etype) or val
+            host = host.strip().lower().rstrip(".")
+            if not host or " " in host:
+                continue
+            if action == "in" and host not in existing:
+                additions.append(host)
+                existing.add(host)
+            elif action == "out" and host not in out_existing:
+                additions.append(host)
+                out_existing.add(host)
+        if additions:
+            field = "scope_in" if action == "in" else "scope_out"
+            current = getattr(program, field) or ""
+            joined = current.rstrip() + ("\n" if current.strip() else "") + "\n".join(additions)
+            setattr(program, field, joined.strip() or None)
+            session.add(program)
+            session.commit()
+    _ensure_targets_from_scope(session, program)
+    rebuild_program(session, program_id)
+    return RedirectResponse(f"/programs/{program_id}/scope", status_code=303)
 
 
 @app.get("/api/v1/verify")

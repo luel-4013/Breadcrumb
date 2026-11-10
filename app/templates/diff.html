@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% block title %}Diff · Breadcrumb{% endblock %}
+{% block crumb %}Diff{% endblock %}
+
+{% block actions %}
+  {% if result %}
+  <a class="btn ghost sm" href="/api/v1/diff?left={{ left|urlencode }}&right={{ right|urlencode }}">JSON</a>
+  {% endif %}
+{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>Compare anything</h2>
+  <p class="muted">
+    Pick two captures, targets, programs, or jobs. Categories: findings, entities, ports,
+    DNS, endpoints, technologies, security headers, and risk. Job selectors use the sealed
+    scan snapshot; everything else uses live evidence state.
+  </p>
+  {% if msg %}<p class="warn-box">{{ msg }}</p>{% endif %}
+  {% if error %}<p class="warn-box">{{ error }}</p>{% endif %}
+
+  <form method="get" action="/diff" class="row">
+    <label>Left
+      <select name="left">
+        <option value="">Choose…</option>
+        {% for group in groups %}
+        <optgroup label="{{ group.label }}">
+          {% for option in group.options %}
+          <option value="{{ option.value }}" {% if option.value == left %}selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </optgroup>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Right
+      <select name="right">
+        <option value="">Choose…</option>
+        {% for group in groups %}
+        <optgroup label="{{ group.label }}">
+          {% for option in group.options %}
+          <option value="{{ option.value }}" {% if option.value == right %}selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </optgroup>
+        {% endfor %}
+      </select>
+    </label>
+    <button class="btn sm" type="submit">Compare</button>
+  </form>
+  <p class="dim">Explicit selectors also work in the API: <code>/api/v1/diff?left=program:1&amp;right=program:2</code>.</p>
+
+  {% if views %}
+  <div class="row" style="flex-wrap:wrap">
+    <span class="side-label">Saved comparisons</span>
+    {% for v in views %}
+    <span class="chip">
+      <a href="/diff?left={{ v.params.get('left', '')|urlencode }}&right={{ v.params.get('right', '')|urlencode }}">{{ v.name }}</a>
+      <form method="post" action="/diff/views/{{ v.id }}/delete" style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+        <button class="icon-btn" type="submit" title="Delete view" aria-label="Delete view">×</button>
+      </form>
+    </span>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+
+{% if result %}
+<section class="card">
+  <div class="spread">
+    <div>
+      <h3>{{ result.left.label }} <span class="muted">→</span> {{ result.right.label }}</h3>
+      <p class="muted">
+        Risk {{ result.summary.risk_before }} → {{ result.summary.risk_after }}
+        ({{ result.risk.direction }}, {{ '%+d'|format(result.summary.risk_delta) }})
+      </p>
+    </div>
+    <div class="row">
+      <form method="post" action="/diff/notify">
+        <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+        <input type="hidden" name="left" value="{{ left }}">
+        <input type="hidden" name="right" value="{{ right }}">
+        <button class="btn sm" type="submit">Alert channels</button>
+      </form>
+      <form method="post" action="/diff/views" class="row">
+        <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+        <input type="hidden" name="left" value="{{ left }}">
+        <input type="hidden" name="right" value="{{ right }}">
+        <input type="text" name="name" placeholder="Save comparison…" required>
+        <button class="btn ghost sm" type="submit">Save</button>
+      </form>
+    </div>
+  </div>
+  <ul class="stats">
+    <li><strong>{{ result.summary.new_findings }}</strong> new findings</li>
+    <li><strong>{{ result.summary.removed_findings }}</strong> gone</li>
+    <li><strong>{{ result.summary.changed_findings }}</strong> changed</li>
+    <li><strong>{{ result.summary.still_open_findings }}</strong> still open</li>
+    <li><strong>{{ result.summary.ports_opened }}</strong> ports opened</li>
+    <li><strong>{{ result.summary.endpoints_added }}</strong> endpoints added</li>
+    <li><strong>{{ result.summary.entities_added }}</strong> entities added</li>
+  </ul>
+</section>
+
+<section class="card">
+  <h3>Findings</h3>
+  {% if result.findings.new %}
+  <h4>New <span class="count">{{ result.findings.new|length }}</span></h4>
+  <ul>
+    {% for f in result.findings.new %}
+    <li><span class="badge sev-{{ f.severity }}">{{ f.severity }}</span> <strong>{{ f.title }}</strong> <span class="dim mono">{{ f.location }}</span></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if result.findings.removed %}
+  <h4>Gone <span class="count">{{ result.findings.removed|length }}</span></h4>
+  <ul>
+    {% for f in result.findings.removed %}
+    <li><span class="badge sev-{{ f.severity }}">{{ f.severity }}</span> {{ f.title }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if result.findings.changed %}
+  <h4>Changed <span class="count">{{ result.findings.changed|length }}</span></h4>
+  <ul>
+    {% for f in result.findings.changed %}
+    <li>
+      <strong>{{ f.after.title }}</strong>
+      {% for c in f.changes %}<span class="chip mono">{{ c.field }}: {{ c.before }} → {{ c.after }}</span>{% endfor %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if not (result.findings.new or result.findings.removed or result.findings.changed) %}
+  <p class="empty">No finding changes.</p>
+  {% endif %}
+</section>
+
+<div class="grid">
+  <section class="card">
+    <h3>Ports</h3>
+    {% if result.ports.opened %}
+    <h4>Opened</h4>
+    <ul>{% for p in result.ports.opened %}<li class="mono">{{ p.port }} {{ p.service or '' }} {{ p.version or '' }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% if result.ports.closed %}
+    <h4>Closed</h4>
+    <ul>{% for p in result.ports.closed %}<li class="mono">{{ p.port }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% if result.ports.changed %}
+    <h4>Changed</h4>
+    <ul>{% for p in result.ports.changed %}<li class="mono">{{ p.port }}: {{ p.before }} → {{ p.after }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% if not (result.ports.opened or result.ports.closed or result.ports.changed) %}<p class="empty">No port changes.</p>{% endif %}
+  </section>
+
+  <section class="card">
+    <h3>Endpoints</h3>
+    {% if result.endpoints.added %}<h4>Added</h4><ul>{% for e in result.endpoints.added %}<li class="mono">{{ e }}</li>{% endfor %}</ul>{% endif %}
+    {% if result.endpoints.removed %}<h4>Removed</h4><ul>{% for e in result.endpoints.removed %}<li class="mono">{{ e }}</li>{% endfor %}</ul>{% endif %}
+    {% if not (result.endpoints.added or result.endpoints.removed) %}<p class="empty">No endpoint changes.</p>{% endif %}
+  </section>
+
+  <section class="card">
+    <h3>DNS</h3>
+    {% if result.dns.added %}<h4>Added</h4><ul>{% for r in result.dns.added %}<li class="mono">{{ r.rtype }} {{ r.name }} {{ r.value }}</li>{% endfor %}</ul>{% endif %}
+    {% if result.dns.removed %}<h4>Removed</h4><ul>{% for r in result.dns.removed %}<li class="mono">{{ r.rtype }} {{ r.name }} {{ r.value }}</li>{% endfor %}</ul>{% endif %}
+    {% if not (result.dns.added or result.dns.removed) %}<p class="empty">No DNS changes.</p>{% endif %}
+  </section>
+
+  <section class="card">
+    <h3>Technologies &amp; headers</h3>
+    {% if result.technologies.added %}<h4>Tech added</h4><ul>{% for t in result.technologies.added %}<li>{{ t }}</li>{% endfor %}</ul>{% endif %}
+    {% if result.technologies.removed %}<h4>Tech removed</h4><ul>{% for t in result.technologies.removed %}<li>{{ t }}</li>{% endfor %}</ul>{% endif %}
+    {% if result.headers.added %}<h4>Headers added</h4><ul>{% for h in result.headers.added %}<li class="mono">{{ h }}</li>{% endfor %}</ul>{% endif %}
+    {% if result.headers.removed %}<h4>Headers removed</h4><ul>{% for h in result.headers.removed %}<li class="mono">{{ h }}</li>{% endfor %}</ul>{% endif %}
+    {% if result.headers.changed %}<h4>Headers changed</h4><ul>{% for h in result.headers.changed %}<li class="mono">{{ h.name }}: {{ h.before }} → {{ h.after }}</li>{% endfor %}</ul>{% endif %}
+    {% if not (result.technologies.added or result.technologies.removed or result.headers.added or result.headers.removed or result.headers.changed) %}<p class="empty">No technology or header changes.</p>{% endif %}
+  </section>
+</div>
+
+{% if result.entities.available %}
+<section class="card">
+  <h3>Entities <span class="count">{{ result.summary.entities_added }} added · {{ result.summary.entities_removed }} removed · {{ result.summary.entities_changed }} changed</span></h3>
+  {% if result.entities.added %}
+  <h4>Added</h4>
+  <ul>
+    {% for e in result.entities.added[:200] %}
+    <li><span class="chip mono">{{ e.type }}</span> <a class="mono" href="/ledger/asset?type={{ e.type|urlencode }}&value={{ e.value|urlencode }}">{{ e.value }}</a></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if result.entities.removed %}
+  <h4>Removed</h4>
+  <ul>
+    {% for e in result.entities.removed[:200] %}
+    <li><span class="chip mono">{{ e.type }}</span> <span class="mono">{{ e.value }}</span></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if result.entities.changed %}
+  <h4>Changed</h4>
+  <ul>
+    {% for e in result.entities.changed[:200] %}
+    <li>
+      <span class="chip mono">{{ e.type }}</span> <span class="mono">{{ e.value }}</span>
+      {% for c in e.changes %}<span class="chip mono">{{ c.field }}: {{ c.before }} → {{ c.after }}</span>{% endfor %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if not (result.entities.added or result.entities.removed or result.entities.changed) %}
+  <p class="empty">No entity changes.</p>
+  {% endif %}
+</section>
+{% else %}
+<section class="card">
+  <h3>Entities</h3>
+  <p class="muted">Entity-level comparison is unavailable when either side is a job snapshot. Compare findings, ports, DNS, endpoints, technologies, headers, and risk above.</p>
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}

@@ -144,6 +144,7 @@ class NucleiParser(Parser):
                     "tags": info.get("tags") or [],
                     "target": host,
                     "template": tid,
+                    "rule_id": tid,
                     "dedup_key": f"nuclei|{tid}|{matched}|{matcher}",
                 }
             )

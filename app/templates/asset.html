@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}{{ timeline.value }} · Ledger · Breadcrumb{% endblock %}
+{% block crumb %}<a href="/ledger">Ledger</a> <span class="sep">/</span> <span class="sub">{{ timeline.value }}</span>{% endblock %}
+
+{% block actions %}
+  <a class="btn ghost sm" href="/ledger">Back to ledger</a>
+  <a class="btn ghost sm" href="/api/v1/ledger/asset?type={{ timeline.type|urlencode }}&value={{ timeline.value|urlencode }}">JSON</a>
+{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2 class="mono">{{ timeline.value }}</h2>
+  <p class="muted">
+    <span class="chip mono">{{ timeline.type }}</span>
+    {% if timeline.seen_before %}<span class="badge seen">seen in {{ timeline.program_count }} programs</span>{% endif %}
+    · {{ timeline.sightings|length }} sighting(s) across {{ timeline.capture_count }} capture(s)
+  </p>
+  <ul class="stats">
+    <li><strong>{{ timeline.program_count }}</strong> programs</li>
+    <li><strong>{{ timeline.capture_count }}</strong> captures</li>
+    <li>first seen <strong>{{ (timeline.first_seen or '')[:16].replace('T', ' ') }}</strong></li>
+    <li>last seen <strong>{{ (timeline.last_seen or '')[:16].replace('T', ' ') }}</strong></li>
+  </ul>
+</section>
+
+<section class="card">
+  <h3>Timeline</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Seen</th>
+        <th>Program</th>
+        <th>Target</th>
+        <th>Capture</th>
+        <th>Scope</th>
+        <th>Analyst</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in timeline.sightings %}
+      <tr>
+        <td class="dim">{{ (s.created_at or '')[:16].replace('T', ' ') }}</td>
+        <td>
+          {% if s.program %}<a class="chip" href="/programs/{{ s.program.id }}">{{ s.program.name }}</a>{% else %}<span class="dim">—</span>{% endif %}
+        </td>
+        <td>{{ s.target.name if s.target else '—' }}</td>
+        <td>
+          {% if s.capture %}
+          <a href="/pastes/{{ s.capture.id }}">#{{ s.capture.id }} · {{ s.capture.source }}</a>
+          {% if s.capture.command %}<div class="dim mono">{{ s.capture.command }}</div>{% endif %}
+          {% else %}<span class="dim">—</span>{% endif %}
+        </td>
+        <td>
+          <span class="badge {{ s.scope_status if s.scope_status in ('in', 'out') else '' }}">{{ s.scope_status }}</span>
+          {% if s.scope_reason %}<span class="chip mono">{{ s.scope_reason }}</span>{% endif %}
+          {% if s.status_code %}<span class="chip mono">{{ s.status_code }}</span>{% endif %}
+        </td>
+        <td>
+          {% if s.verdict and s.verdict != 'none' %}<span class="badge v-{{ s.verdict }}">{{ s.verdict }}</span>{% endif %}
+          {% for t in s.tags %}<span class="chip tag">{{ t }}</span>{% endfor %}
+          {% if s.notes %}<div class="dim">{{ s.notes }}</div>{% endif %}
+        </td>
+        <td>
+          <details>
+            <summary class="btn ghost sm">Annotate</summary>
+            <form method="post" action="/entities/{{ s.entity_id }}/annotate" class="stack" style="min-width:240px">
+              <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+              <input type="hidden" name="back" value="/ledger/asset?type={{ timeline.type|urlencode }}&value={{ timeline.value|urlencode }}">
+              <label>Verdict
+                <select name="verdict">
+                  {% for v in ['none', 'confirmed', 'needs-review', 'false-positive'] %}
+                  <option value="{{ v }}" {% if s.verdict == v %}selected{% endif %}>{{ v }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>Tags<input type="text" name="tags" value="{{ s.tags|join(', ') }}" placeholder="needs-auth, admin"></label>
+              <label>Notes<textarea name="notes" rows="2">{{ s.notes or '' }}</textarea></label>
+              <button class="btn sm" type="submit">Save annotation</button>
+            </form>
+          </details>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="dim">Annotations apply to one sighting. The Ledger aggregates verdicts and tags across every sighting of the same asset.</p>
+</section>
+{% endblock %}

@@ -48,7 +48,52 @@
     <a class="btn ghost sm" href="/programs/{{ program.id }}/graph">Reset</a>
     {% endif %}
   </form>
+  {% if views %}
+  <div class="row" style="flex-wrap:wrap">
+    <span class="side-label">Saved graph views</span>
+    {% for v in views %}
+    <span class="chip">
+      <a href="/programs/{{ program.id }}/graph?q={{ v.params.get('q', '')|urlencode }}&node_type={{ v.params.get('node_type', '')|urlencode }}">{{ v.name }}</a>
+      <form method="post" action="/programs/{{ program.id }}/graph/views/{{ v.id }}/delete" style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+        <button class="icon-btn" type="submit" title="Delete view" aria-label="Delete view">×</button>
+      </form>
+    </span>
+    {% endfor %}
+  </div>
+  {% endif %}
+  <form method="post" action="/programs/{{ program.id }}/graph/views" class="row">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+    <input type="hidden" name="q" value="{{ q }}">
+    <input type="hidden" name="node_type" value="{{ node_type }}">
+    <input type="text" name="name" placeholder="Save this graph view…" required>
+    <button class="btn ghost sm" type="submit">Save view</button>
+  </form>
 </section>
+
+{% if shared_assets %}
+<section class="card">
+  <h3>Seen in other programs <span class="count">{{ shared_assets|length }}</span></h3>
+  <p class="muted">
+    These assets exist in this program and at least one other. Open the Ledger timeline to
+    see every capture that observed them before testing them again.
+  </p>
+  <table>
+    <thead><tr><th>Type</th><th>Asset</th><th>Also seen in</th></tr></thead>
+    <tbody>
+      {% for a in shared_assets %}
+      <tr>
+        <td><span class="chip mono">{{ a.type }}</span></td>
+        <td class="mono"><a href="/ledger/asset?type={{ a.type|urlencode }}&value={{ a.value|urlencode }}">{{ a.value }}</a></td>
+        <td>
+          {% for p in a.programs %}<a class="chip" href="/programs/{{ p.id }}">{{ p.name }}</a>{% endfor %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
 
 {% if path_tree.roots %}
 <section class="card">
