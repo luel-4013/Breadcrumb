@@ -9,7 +9,8 @@
   <a class="btn ghost sm" href="/diff?left=program:{{ program.id }}">Diff</a>
   <a class="btn ghost sm" href="/programs/{{ program.id }}/changes">Changes</a>
   <a class="btn ghost sm" href="/pipeline?program_id={{ program.id }}">Pipeline</a>
-  <a class="btn ghost sm" href="/reports/{{ program.id }}/html">Report</a>
+  <a class="btn sm" href="/programs/{{ program.id }}/reports">Report studio</a>
+  <a class="btn ghost sm" href="/reports/{{ program.id }}/html">Classic report</a>
   <form method="post" action="/programs/{{ program.id }}/rebuild">
     <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}"><button class="btn sm" type="submit">Rebuild</button></form>
 {% endblock %}
@@ -85,6 +86,9 @@
         <a href="/reports/{{ program.id }}/json">json</a> ·
         <a href="/reports/{{ program.id }}/csv">csv</a> ·
         <a href="/reports/{{ program.id }}/h1">hackerone md</a> ·
+        <a href="/reports/{{ program.id }}/defectdojo">defectdojo</a> ·
+        <a href="/reports/{{ program.id }}/ghostwriter">ghostwriter</a> ·
+        <a href="/reports/{{ program.id }}/dradis.md">dradis</a> ·
         <a href="/reports/{{ program.id }}/sarif">sarif</a> ·
         <a href="/reports/{{ program.id }}/pdf">pdf</a> ·
         <a href="/reports/{{ program.id }}/targets.txt" title="in-scope hosts for nuclei -l / httpx -l">targets.txt</a>

@@ -787,3 +787,376 @@ def generate_report_pdf(
 
     doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
     return buffer.getvalue()
+
+
+def generate_document_pdf(context: dict) -> bytes:
+    """Render a report-template context to PDF.
+
+    This is intentionally separate from the legacy job-report renderer: it
+    consumes the same redacted, format-independent context as the Markdown,
+    HTML and JSON exporters, so a template's PDF cannot contain a value that a
+    reviewer would not see in the other formats.
+
+    Every value is escaped before it reaches reportlab. Evidence is rendered as
+    a code table, not as paragraph markup.
+    """
+    context = context or {}
+    styles = _build_styles()
+    program = context.get("program") or {}
+    template = context.get("template") or {}
+    summary = context.get("summary") or {}
+    redaction = context.get("redaction") or {}
+    title = str(context.get("title") or "Breadcrumb report")
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        topMargin=0.72 * inch,
+        bottomMargin=0.75 * inch,
+        leftMargin=0.72 * inch,
+        rightMargin=0.72 * inch,
+        title=f"Breadcrumb Report - {title}",
+        author="Breadcrumb",
+        subject=f"{context.get('confidentiality_label') or 'CONFIDENTIAL'} report",
+        keywords="security assessment, report, Breadcrumb",
+    )
+    doc.breadcrumb_footer = (
+        f"Breadcrumb | {program.get('name') or 'report'} | "
+        f"{context.get('report_reference') or ''}"
+    )
+    story: list[Any] = []
+    story.append(Paragraph("BREADCRUMB", styles["Brand"]))
+    story.append(Paragraph(_escape(title, 300), styles["ReportTitle"]))
+    if program.get("name"):
+        story.append(Paragraph(_escape(program["name"], 300), styles["TargetName"]))
+    if program.get("platform"):
+        story.append(Paragraph(_escape(program["platform"], 200), styles["Meta"]))
+    story.append(Spacer(1, 8))
+
+    meta_rows = [
+        ["Classification", context.get("confidentiality_label") or "CONFIDENTIAL"],
+        ["Template", template.get("name") or "report"],
+        ["Report date", context.get("report_date") or "-"],
+        ["Generated", context.get("generated_at") or "-"],
+        ["Reference", context.get("report_reference") or "-"],
+    ]
+    for label in ("client", "author", "engagement"):
+        if context.get(label):
+            meta_rows.append([label.title(), context[label]])
+    meta_table = Table(
+        [[Paragraph(_escape(label, 80), styles["TableCell"]),
+          Paragraph(_escape(str(value), 300), styles["TableCell"])]
+         for label, value in meta_rows],
+        colWidths=[1.4 * inch, 5.5 * inch],
+    )
+    meta_table.setStyle(
+        TableStyle(
+            [
+                ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+                ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#6b7280")),
+                ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("LINEBELOW", (0, 0), (-1, -1), 0.4, colors.HexColor("#e5e7eb")),
+            ]
+        )
+    )
+    story.append(meta_table)
+    story.append(Spacer(1, 8))
+    notice = Table(
+        [[Paragraph(
+            "<b>CONFIDENTIAL</b> &nbsp;|&nbsp; This report contains "
+            "security-sensitive information about the assessed target. "
+            "Distribute only to authorized recipients.",
+            styles["Confidential"],
+        )]],
+        colWidths=[6.95 * inch],
+    )
+    notice.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fef2f2")),
+                ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#fecaca")),
+                ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor("#dc2626")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 9),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]
+        )
+    )
+    story.append(notice)
+    story.append(Spacer(1, 7))
+    if redaction.get("enabled"):
+        story.append(
+            Paragraph(
+                _escape(
+                    f"Redaction: {redaction.get('profile', 'default')} profile; "
+                    f"{redaction.get('custom_rules', 0)} custom rule(s). "
+                    "Authentication headers, cookies, tokens and secret values "
+                    "are masked.",
+                    600,
+                ),
+                styles["Meta"],
+            )
+        )
+    elif (context.get("variables") or {}).get("reveal"):
+        story.append(
+            Paragraph(
+                "<b>WARNING:</b> secret masking is disabled for this report.",
+                styles["Confidential"],
+            )
+        )
+
+    if context.get("executive_summary"):
+        story.append(Paragraph("Executive summary", styles["SectionHeading"]))
+        story.append(Paragraph(_escape(context["executive_summary"]), styles["Normal"]))
+
+    story.append(Paragraph("Summary", styles["SectionHeading"]))
+    risk_level = str(summary.get("risk_level") or "minimal").upper()
+    story.append(
+        Paragraph(
+            f"<b>Risk:</b> {_escape(risk_level, 20)} "
+            f"({_escape(str(summary.get('risk_score', 0)), 10)}/100)",
+            styles["Normal"],
+        )
+    )
+    counts = summary.get("severity_counts") or {}
+    story.append(
+        Paragraph(
+            "<b>Findings:</b> "
+            + _escape(
+                ", ".join(f"{key} x {value}" for key, value in counts.items()) or "none",
+                400,
+            ),
+            styles["Normal"],
+        )
+    )
+    story.append(
+        Paragraph(
+            "<b>Surface:</b> "
+            + _escape(
+                f"{summary.get('entity_count', 0)} entities, "
+                f"{summary.get('target_count', 0)} targets, "
+                f"{summary.get('capture_count', 0)} captures",
+                300,
+            ),
+            styles["Normal"],
+        )
+    )
+    story.append(Spacer(1, 5))
+
+    if context.get("business_context"):
+        story.append(Paragraph("Business context", styles["SectionHeading"]))
+        story.append(Paragraph(_escape(context["business_context"]), styles["Normal"]))
+
+    highlights = context.get("highlights") or []
+    if highlights:
+        story.append(Paragraph("Top findings", styles["SectionHeading"]))
+        for item in highlights:
+            story.append(
+                Paragraph(
+                    f"<b>{_escape(str(item.get('severity') or 'info').upper(), 20)}</b> "
+                    f"{_escape(item.get('title') or '', 300)} — "
+                    f"{_escape(item.get('explanation') or '', 600)}",
+                    styles["Normal"],
+                )
+            )
+            story.append(Spacer(1, 3))
+
+    scope_in = (context.get("program") or {}).get("scope_in") or ""
+    scope_out = (context.get("program") or {}).get("scope_out") or ""
+    if scope_in or scope_out:
+        story.append(Paragraph("Scope", styles["SectionHeading"]))
+        if scope_in:
+            story.append(Paragraph("In scope", styles["Label"]))
+            story.append(_code_block(scope_in, styles, limit=3000))
+        if scope_out:
+            story.append(Paragraph("Out of scope", styles["Label"]))
+            story.append(_code_block(scope_out, styles, limit=3000))
+
+    targets = context.get("targets") or []
+    if targets:
+        story.append(Paragraph("Targets", styles["SectionHeading"]))
+        for target in targets[:100]:
+            story.append(
+                Paragraph(
+                    f"- <font name='Courier'>{_escape(target.get('name') or '', 200)}</font> "
+                    f"({_escape(target.get('kind') or '', 40)})",
+                    styles["Normal"],
+                )
+            )
+
+    groups = context.get("entity_groups") or []
+    if groups:
+        story.append(Paragraph("Attack-surface inventory", styles["SectionHeading"]))
+        for group in groups[:15]:
+            story.append(
+                Paragraph(
+                    f"<b>{_escape(group.get('label') or '', 100)}</b> "
+                    f"({_escape(str(group.get('count', 0)), 20)})",
+                    styles["Label"],
+                )
+            )
+            rows = [["Value", "Scope", "HTTP", "Tags"]]
+            for item in (group.get("values") or [])[:40]:
+                rows.append(
+                    [
+                        _escape(item.get("value") or "", 500),
+                        _escape(item.get("scope_status") or "", 20),
+                        _escape(str(item.get("status_code") or ""), 10),
+                        _escape(", ".join(item.get("tags") or []), 120),
+                    ]
+                )
+            table = Table(rows, colWidths=[3.9 * inch, 0.9 * inch, 0.6 * inch, 1.5 * inch])
+            table.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#111827")),
+                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                        ("TOPPADDING", (0, 0), (-1, -1), 3),
+                        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f9fafb")]),
+                        ("LINEBELOW", (0, 0), (-1, -1), 0.4, colors.HexColor("#e5e7eb")),
+                    ]
+                )
+            )
+            story.append(table)
+            if group.get("truncated"):
+                story.append(
+                    Paragraph(
+                        _escape(f"…and {group['truncated']} more.", 100),
+                        styles["Meta"],
+                    )
+                )
+
+    changes = context.get("changes")
+    if changes and changes.get("available"):
+        story.append(Paragraph("Change summary", styles["SectionHeading"]))
+        left = changes.get("left") or {}
+        right = changes.get("right") or {}
+        story.append(
+            Paragraph(
+                _escape(
+                    f"Compared {left.get('label') or left.get('selector')} -> "
+                    f"{right.get('label') or right.get('selector')}.",
+                    500,
+                ),
+                styles["Normal"],
+            )
+        )
+        summary = changes.get("summary") or {}
+        story.append(
+            Paragraph(
+                _escape(
+                    f"New findings {summary.get('new_findings', 0)}, "
+                    f"removed {summary.get('removed_findings', 0)}, "
+                    f"ports opened {summary.get('ports_opened', 0)}, "
+                    f"endpoints added {summary.get('endpoints_added', 0)}, "
+                    f"risk {summary.get('risk_before', 0)} -> {summary.get('risk_after', 0)}.",
+                    600,
+                ),
+                styles["Normal"],
+            )
+        )
+        for item in (changes.get("findings_new") or [])[:50]:
+            story.append(
+                Paragraph(
+                    f"- [{_escape(str(item.get('severity') or 'info').upper(), 20)}] "
+                    f"{_escape(item.get('title') or '', 300)}",
+                    styles["Normal"],
+                )
+            )
+        for item in (changes.get("ports_opened") or [])[:100]:
+            story.append(
+                Paragraph(
+                    _escape(f"- port {item.get('port')} {item.get('service') or ''}", 200),
+                    styles["Normal"],
+                )
+            )
+    elif changes:
+        story.append(Paragraph("Change summary", styles["SectionHeading"]))
+        story.append(Paragraph(_escape(changes.get("reason") or "No change data."), styles["Normal"]))
+
+    findings = context.get("findings") or []
+    story.append(Paragraph(f"Findings ({context.get('findings_total', len(findings))})", styles["SectionHeading"]))
+    if not findings:
+        story.append(Paragraph("No active findings at the selected severity.", styles["Normal"]))
+    for finding in findings:
+        severity = str(finding.get("severity") or "info").lower()
+        if severity not in SEVERITY_ORDER:
+            severity = "info"
+        badge = Paragraph(severity.upper()[:12], _severity_badge_style(styles, severity))
+        finding_title = Paragraph(
+            _escape(f"{finding.get('ref') or ''} — {finding.get('title') or 'Finding'}", 400),
+            styles["FindingTitle"],
+        )
+        header_table = Table([[badge, finding_title]], colWidths=[0.85 * inch, 6.15 * inch])
+        header_table.setStyle(
+            TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (0, 0), 0),
+                    ("LEFTPADDING", (1, 0), (1, 0), 6),
+                    ("TOPPADDING", (0, 0), (-1, -1), 2),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ]
+            )
+        )
+        head = [header_table]
+        meta_bits = []
+        if finding.get("verified"):
+            meta_bits.append("verified")
+        if finding.get("cvss"):
+            meta_bits.append(f"CVSS {finding['cvss']}")
+        if finding.get("cve"):
+            meta_bits.append(str(finding["cve"]))
+        if finding.get("location"):
+            meta_bits.append(str(finding["location"]))
+        if meta_bits:
+            head.append(Paragraph(_escape(" · ".join(meta_bits), 400), styles["Meta"]))
+        for label, key in (
+            ("Description", "description"),
+            ("Steps to reproduce", "steps"),
+            ("Impact", "impact"),
+        ):
+            if finding.get(key):
+                head.append(Paragraph(label, styles["Label"]))
+                head.append(Paragraph(_escape(finding[key]), styles["Normal"]))
+        story.append(KeepTogether(head))
+        if finding.get("evidence"):
+            story.append(Paragraph("Evidence", styles["Label"]))
+            story.append(_code_block(str(finding["evidence"]), styles))
+        if finding.get("remediation"):
+            story.append(Paragraph("Remediation", styles["Label"]))
+            story.append(Paragraph(_escape(finding["remediation"]), styles["Normal"]))
+        story.append(Spacer(1, 8))
+        story.append(HRFlowable(width="100%", color=colors.HexColor("#e5e7eb")))
+        story.append(Spacer(1, 5))
+
+    if context.get("recommendations"):
+        story.append(Paragraph("Recommendations", styles["SectionHeading"]))
+        story.append(Paragraph(_escape(context["recommendations"]), styles["Normal"]))
+    if context.get("methodology"):
+        story.append(Paragraph("Methodology", styles["SectionHeading"]))
+        story.append(Paragraph(_escape(context["methodology"]), styles["Normal"]))
+
+    story.append(Spacer(1, 14))
+    story.append(
+        Paragraph(
+            _escape(
+                f"{context.get('confidentiality_label') or 'CONFIDENTIAL'} · "
+                f"Generated by Breadcrumb on {context.get('generated_at')}. "
+                "Findings are based on reconnaissance and may include false positives; "
+                "validate before submission.",
+                600,
+            ),
+            styles["Meta"],
+        )
+    )
+    if context.get("footer"):
+        story.append(Paragraph(_escape(context["footer"], 500), styles["Meta"]))
+
+    doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
+    return buffer.getvalue()

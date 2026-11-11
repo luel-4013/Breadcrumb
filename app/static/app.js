@@ -723,3 +723,12 @@
   }
 })();
 
+
+/* Report studio: submit the variable form when the template changes. */
+document.querySelectorAll("[data-autosubmit]").forEach(function (el) {
+  el.addEventListener("change", function () {
+    if (!el.form) return;
+    if (el.form.requestSubmit) el.form.requestSubmit();
+    else el.form.submit();
+  });
+});

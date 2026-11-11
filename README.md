@@ -61,9 +61,14 @@ First report in five minutes:
 
 ```bash
 .venv/bin/python -m app.cli demo      # seed a sample program and captures
-# open the printed /reports/<id>/html URL, or run the app and click
-# "Load sample program" on the empty dashboard
+# open the printed URL (or /programs/<id>/reports), pick a template and preview
 .venv/bin/python -m app.cli doctor    # check Python, SQLite, paths, key, parsers
+```
+
+From the demo program to a downloadable HackerOne Markdown file:
+
+```bash
+.venv/bin/python -m app.cli render 1 --template hackerone --format md -o report.md
 ```
 
 ## Features
@@ -134,10 +139,24 @@ First report in five minutes:
   reports or exports.
 - **Findings workflow**: severity + status (`open → in-progress → resolved /
   wont-fix`), tags + notes, per-target findings, HackerOne-style markdown export.
-- **Exports**: HTML, Markdown, JSON, CSV, **SARIF** (CI / GitHub code
-  scanning), HackerOne report, printable HTML, **PDF** with confidentiality
-  banner and escaped evidence, and `targets.txt` (pipe straight into
-  `nuclei -l` / `httpx -l`). Secrets are masked in exports unless `?reveal=1`.
+- **Report studio (Phase C)**: five built-in templates — HackerOne submission,
+  pentest executive summary, technical finding report, recon inventory and
+  change report — with typed variables, live preview, and Markdown/HTML/JSON/PDF
+  output from one redacted context. Golden reports keep the formats in sync.
+- **Redaction by default**: auth headers, cookies, bearer/JWT tokens, URL
+  credentials, query tokens, cloud keys, private keys and sensitive entity
+  values are masked in every report, export, manifest and review bundle.
+  Custom `literal:`/`regex:` rules are additive; `reveal` is explicit and
+  unsafe. See [docs/REDACTION_GUIDE.md](docs/REDACTION_GUIDE.md).
+- **Offline review bundle**: one deterministic zip with printable HTML,
+  Markdown, JSON, optional PDF, a SHA-256 manifest, per-capture redacted
+  evidence manifests, optional comments, and an in-memory verifier that rejects
+  tampering, traversal, symlinks and missing files. No login or server needed.
+- **Integration exports**: HackerOne Markdown, DefectDojo Generic Findings
+  Import JSON, Ghostwriter bridge JSON, Dradis note Markdown, **SARIF** (CI /
+  GitHub code scanning), CSV, full JSON, and `targets.txt` (pipe straight into
+  `nuclei -l` / `httpx -l`). Field mappings are documented in
+  [docs/INTEGRATION_MAPPINGS.md](docs/INTEGRATION_MAPPINGS.md).
 - **Local AI analyst**: *Analyze with AI* on any capture, *Summarize* per
   program. Strict JSON extraction with graceful fallback. Works with any
   OpenAI-compatible server.
@@ -296,6 +315,55 @@ applied on import and on *Save & rebuild*; the parser's original severity stays
 in `Finding.meta.parser_severity` and `severity_override` records the change.
 Remove a line to revert.
 
+## Reports, redaction and review bundles
+
+Open `/programs/<id>/reports` (or click **Report studio** on a program) to pick
+a template, fill typed variables and preview the exact HTML that will be
+downloaded. The five built-in templates cover a HackerOne submission, an
+executive summary, a technical finding report, a recon inventory and a change
+report. Markdown, HTML, JSON and PDF all render from the same validated,
+redacted context.
+
+```bash
+# One finding, full evidence, internal technical report
+python -m app.cli render 1 --template technical --var finding_id=42 --format html -o finding.html
+
+# Recon inventory with strict masking for a client
+python -m app.cli render 1 --template recon --redaction-profile strict --format pdf -o recon.pdf
+
+# What changed since the previous capture?
+python -m app.cli render 1 --template change --format md -o change.md
+
+# Review bundle: report + redacted capture manifests + checksums
+python -m app.cli bundle 1 --template technical --comments notes.md --include-pdf -o review.zip
+python -m app.cli verify-bundle review.zip
+```
+
+Redaction is on by default. Add per-report rules as `literal:text=replacement`
+or `regex:pattern=replacement` lines; built-in masking always runs first.
+`--reveal` / `reveal=1` disables all masking and is never a safe default for a
+shared artifact. A reveal bundle still verifies, but the verifier warns.
+
+The review bundle is a single zip containing `report.html`, `report.md`,
+`report.json`, an optional `report.pdf`, a SHA-256 manifest, per-capture
+redacted evidence manifests, optional `comments.md`, `SHA256SUMS` and a
+`README.txt`. Raw capture bodies are never included. Verification happens
+in-memory: traversal, duplicate entries, symlinks, encryption, missing files
+and hash mismatches all fail without extracting the zip.
+
+Integration exports live next to the templates:
+
+```bash
+python -m app.cli export 1 --format defectdojo -o defectdojo.json
+python -m app.cli export 1 --format ghostwriter -o ghostwriter.json
+python -m app.cli export 1 --format dradis -o dradis.md
+python -m app.cli export 1 --format sarif -o breadcrumb.sarif
+```
+
+See [docs/REPORT_COOKBOOK.md](docs/REPORT_COOKBOOK.md),
+[docs/REDACTION_GUIDE.md](docs/REDACTION_GUIDE.md) and
+[docs/INTEGRATION_MAPPINGS.md](docs/INTEGRATION_MAPPINGS.md).
+
 ## CLI
 
 ```bash
@@ -308,6 +376,7 @@ python -m app.cli ingest scan.txt --report-json -  # machine-readable import rep
 python -m app.cli manifest 1 --format md -o capture.md
 python -m app.cli verify --paste 1            # capture/manifest/hash-chain check
 python -m app.cli export 1 --format sarif -o out.sarif
+python -m app.cli export 1 --format defectdojo -o findings.json
 python -m app.cli gate 1 --max-severity high   # exit 1 to fail a CI job
 python -m app.cli findings --program 1 --min-severity high
 python -m app.cli programs --json
@@ -321,6 +390,11 @@ python -m app.cli ledger list "seen:other-program"  # cross-program memory
 python -m app.cli ledger show --type subdomain --value app.example.com
 python -m app.cli ledger export "tag:needs-auth" -o auth.jsonl
 python -m app.cli ledger import auth.jsonl          # additive round-trip
+python -m app.cli report-templates                  # list built-in report templates
+python -m app.cli render 1 --template hackerone --format md -o report.md
+python -m app.cli render 1 --template technical --format pdf -o report.pdf
+python -m app.cli bundle 1 --template technical --include-pdf -o review.zip
+python -m app.cli verify-bundle review.zip          # offline, in-memory check
 python -m app.cli report 1 --format pdf -o report.pdf
 python -m app.cli import-leadline --db /path/to/leadline.db --dry-run
 ```
@@ -346,6 +420,17 @@ curl /api/v1/programs
 curl '/api/v1/ledger?q=type:port%20seen:other-program&limit=50'
 curl '/api/v1/ledger/asset?type=subdomain&value=app.example.com'
 curl '/api/v1/diff?left=program:1&right=program:2'
+
+# reports, redaction and integration exports (all masked by default)
+curl '/api/v1/report-templates'
+curl '/reports/1/templates/hackerone.md'
+curl '/reports/1/templates/technical.pdf' -o report.pdf
+curl '/reports/1/defectdojo' -o defectdojo.json
+curl '/reports/1/ghostwriter' -o ghostwriter.json
+curl '/reports/1/dradis.md' -o dradis.md
+curl '/reports/1/sarif' -o breadcrumb.sarif
+# review bundle is a CSRF-protected form POST; use the CLI for scripts:
+# python -m app.cli bundle 1 --template technical -o review.zip
 
 # bulk triage (ignore | unignore | delete | tag | untag | verdict)
 curl -X POST /api/v1/entities/bulk -H 'Content-Type: application/json' \
@@ -387,18 +472,21 @@ reverse proxy.
   `breadcrumb doctor`, sample demo, benchmark harness. Implemented.
 - **0.6.0 — Memory:** Ledger v2, diff v2, scope v2 (status-code/path/rule),
   graph v2, saved views. Implemented.
-- **0.7.0 — Report:** templates, redaction, review bundle, HackerOne/DefectDojo
-  exports validated against test instances.
+- **0.7.0 — Report:** five templates, default-on redaction, review bundle,
+  HackerOne/DefectDojo/Ghostwriter/Dradis/SARIF exports. Implemented.
 - **0.8.0 — Automate:** scheduled re-import, local parser SDK, stable API
-  pagination, 1M-entity performance.
+  pagination, 1M-entity performance. Next.
 - **0.9.0 — Capture:** optional screenshot import and adapter hardening.
 - **1.0.0 — Flagship:** security/migration/rollback/soak gates and docs.
 
 See [docs/IMPORT_COOKBOOK.md](docs/IMPORT_COOKBOOK.md),
 [docs/MANIFEST_AND_DOCTOR.md](docs/MANIFEST_AND_DOCTOR.md),
 [docs/CROSS_PROGRAM_MEMORY.md](docs/CROSS_PROGRAM_MEMORY.md),
-[docs/DIFF_COOKBOOK.md](docs/DIFF_COOKBOOK.md) and
-[docs/SCOPE_DECISIONS.md](docs/SCOPE_DECISIONS.md).
+[docs/DIFF_COOKBOOK.md](docs/DIFF_COOKBOOK.md),
+[docs/SCOPE_DECISIONS.md](docs/SCOPE_DECISIONS.md),
+[docs/REPORT_COOKBOOK.md](docs/REPORT_COOKBOOK.md),
+[docs/REDACTION_GUIDE.md](docs/REDACTION_GUIDE.md) and
+[docs/INTEGRATION_MAPPINGS.md](docs/INTEGRATION_MAPPINGS.md).
 
 ## Contributing
 

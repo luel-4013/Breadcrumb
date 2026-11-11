@@ -11,8 +11,9 @@ import threading
 from collections import Counter
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from html import escape as html_escape
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import (
@@ -41,7 +42,9 @@ from . import (
     notify,
     pdf_export,
     pipeline as pipeline_mod,
+    report_templates,
     reporting,
+    review_bundle,
     runners,
     triage,
 )
@@ -2182,6 +2185,278 @@ def report_html(program_id: int, request: Request, session: Session = Depends(ge
             masked=not reveal,
         ),
     )
+
+
+def _truthy(value) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _report_values(source, template, *, submitted: bool = False) -> dict:
+    """Read template variables from a query string or submitted form.
+
+    Checkbox defaults only apply on the initial page load. Once a form is
+    submitted, a missing checkbox means the operator unchecked it.
+    """
+    values: dict = {}
+    for variable in template.variables:
+        present = variable.key in source
+        raw = source.get(variable.key)
+        if variable.kind == "checkbox":
+            values[variable.key] = (
+                _truthy(raw) if (present or submitted) else bool(variable.default)
+            )
+        elif present and raw is not None:
+            values[variable.key] = raw
+        else:
+            values[variable.key] = variable.default
+    return values
+
+
+def _report_query(values: dict) -> str:
+    payload = {}
+    for key, value in values.items():
+        if isinstance(value, bool):
+            payload[key] = "1" if value else "0"
+        elif value is None:
+            payload[key] = ""
+        else:
+            payload[key] = str(value)
+    return urlencode(payload)
+
+
+def _report_error_page(errors) -> str:
+    items = "".join(
+        f"<li>{html_escape(str(error))}</li>" for error in (errors or ["Unknown error"])
+    )
+    return (
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<title>Report error</title><style>"
+        "body{font:15px system-ui;margin:40px;max-width:720px;color:#111}"
+        "li{margin:6px 0}code{background:#f3f4f6;padding:2px 4px}"
+        "</style></head><body><h1>Report could not be rendered</h1><ul>"
+        f"{items}</ul><p>Go back and fix the highlighted values.</p></body></html>"
+    )
+
+
+@app.get("/programs/{program_id}/reports", response_class=HTMLResponse)
+def report_builder(
+    program_id: int, request: Request, session: Session = Depends(get_session)
+):
+    program = session.get(Program, program_id)
+    if program is None:
+        raise HTTPException(status_code=404, detail="Program not found")
+    errors: list[str] = []
+    try:
+        template = report_templates.get_template(
+            request.query_params.get("template") or "hackerone"
+        )
+    except report_templates.TemplateError as exc:
+        errors.extend(exc.errors)
+        template = report_templates.get_template("hackerone")
+    values = _report_values(
+        request.query_params,
+        template,
+        submitted=request.query_params.get("submitted") == "1",
+    )
+    context = None
+    if not errors:
+        try:
+            context = report_templates.build_context(
+                session, program_id, template.id, values
+            )
+        except report_templates.TemplateError as exc:
+            errors.extend(exc.errors)
+    preview_html = report_templates.render_html(context) if context else ""
+    query = _report_query({**values, "template": template.id})
+    return templates.TemplateResponse(
+        request,
+        "reports.html",
+        _ctx(
+            program=program,
+            available_templates=report_templates.list_templates(),
+            selected_template=template,
+            values=values,
+            errors=errors,
+            preview_html=preview_html,
+            preview_url=f"/programs/{program_id}/reports/preview?{query}",
+            query=query,
+            report_context=context,
+            redaction=(context or {}).get("redaction") or {},
+        ),
+    )
+
+
+@app.get("/programs/{program_id}/reports/preview", response_class=HTMLResponse)
+def report_preview(
+    program_id: int, request: Request, session: Session = Depends(get_session)
+):
+    if session.get(Program, program_id) is None:
+        raise HTTPException(status_code=404, detail="Program not found")
+    try:
+        template = report_templates.get_template(
+            request.query_params.get("template") or "hackerone"
+        )
+        values = _report_values(
+            request.query_params,
+            template,
+            submitted=request.query_params.get("submitted") == "1",
+        )
+        context = report_templates.build_context(
+            session, program_id, template.id, values
+        )
+        return HTMLResponse(report_templates.render_html(context))
+    except report_templates.TemplateError as exc:
+        return HTMLResponse(_report_error_page(exc.errors), status_code=400)
+
+
+@app.get("/reports/{program_id}/templates/{template_id}.{fmt}")
+def report_template_download(
+    program_id: int,
+    template_id: str,
+    fmt: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Download one template report as md, html, json, or pdf."""
+    if session.get(Program, program_id) is None:
+        raise HTTPException(status_code=404, detail="Program not found")
+    try:
+        template = report_templates.get_template(template_id)
+        values = _report_values(
+            request.query_params,
+            template,
+            submitted=request.query_params.get("submitted") == "1",
+        )
+        context = report_templates.build_context(
+            session, program_id, template.id, values
+        )
+        content = report_templates.render(context, fmt)
+    except report_templates.TemplateError as exc:
+        raise HTTPException(status_code=400, detail="; ".join(exc.errors)) from exc
+    extension = "md" if fmt.lower() == "markdown" else fmt.lower()
+    filename = report_templates.filename(context, extension)
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    if isinstance(content, bytes):
+        return Response(content, media_type="application/pdf", headers=headers)
+    media_type = {
+        "md": "text/markdown; charset=utf-8",
+        "html": "text/html; charset=utf-8",
+        "json": "application/json; charset=utf-8",
+    }.get(extension, "text/plain; charset=utf-8")
+    return Response(content, media_type=media_type, headers=headers)
+
+
+@app.post("/reports/{program_id}/bundle")
+async def report_bundle_download(
+    program_id: int, request: Request, session: Session = Depends(get_session)
+):
+    """Build an offline review bundle from the submitted report form."""
+    if session.get(Program, program_id) is None:
+        raise HTTPException(status_code=404, detail="Program not found")
+    form = await request.form()
+    try:
+        template = report_templates.get_template(
+            str(form.get("template") or "hackerone")
+        )
+        values = _report_values(form, template, submitted=True)
+        data, manifest = review_bundle.build_bundle(
+            session,
+            program_id,
+            template.id,
+            values,
+            comments=str(form.get("comments") or ""),
+            include_pdf=_truthy(form.get("include_pdf")),
+        )
+    except report_templates.TemplateError as exc:
+        raise HTTPException(status_code=400, detail="; ".join(exc.errors)) from exc
+    filename = review_bundle.bundle_filename(manifest)
+    return Response(
+        data,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Breadcrumb-Bundle-Captures": str(manifest.get("captures_included", 0)),
+        },
+    )
+
+
+@app.get("/reports/{program_id}/defectdojo")
+def report_defectdojo(
+    program_id: int, request: Request, session: Session = Depends(get_session)
+):
+    """DefectDojo Generic Findings Import JSON (redacted by default)."""
+    data = reporting.to_defectdojo(
+        session,
+        program_id,
+        mask=not _reveal(request),
+        include_triaged=_include_triaged(request),
+    )
+    if not data:
+        raise HTTPException(status_code=404, detail="Program not found")
+    return JSONResponse(
+        data,
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="breadcrumb-{program_id}-defectdojo.json"'
+            )
+        },
+    )
+
+
+@app.get("/reports/{program_id}/ghostwriter")
+def report_ghostwriter(
+    program_id: int, request: Request, session: Session = Depends(get_session)
+):
+    """Ghostwriter/Dradis-friendly finding JSON (redacted by default)."""
+    data = reporting.to_ghostwriter(
+        session,
+        program_id,
+        mask=not _reveal(request),
+        include_triaged=_include_triaged(request),
+    )
+    if not data:
+        raise HTTPException(status_code=404, detail="Program not found")
+    return JSONResponse(
+        data,
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="breadcrumb-{program_id}-ghostwriter.json"'
+            )
+        },
+    )
+
+
+@app.get("/reports/{program_id}/dradis.md", response_class=PlainTextResponse)
+def report_dradis(
+    program_id: int, request: Request, session: Session = Depends(get_session)
+):
+    """Dradis note-format Markdown (``#[Field]#`` blocks)."""
+    text = reporting.to_dradis_markdown(
+        session,
+        program_id,
+        mask=not _reveal(request),
+        include_triaged=_include_triaged(request),
+    )
+    if not text:
+        raise HTTPException(status_code=404, detail="Program not found")
+    return PlainTextResponse(
+        text,
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="breadcrumb-{program_id}-dradis.md"'
+            )
+        },
+    )
+
+
+@app.get("/api/v1/report-templates")
+def api_report_templates():
+    """List built-in report templates and their typed variables."""
+    return {
+        "version": __version__,
+        "redaction": "default-on; custom rules are additive",
+        "templates": [template.as_dict() for template in report_templates.list_templates()],
+    }
 
 
 def _reveal(request: Request) -> bool:

@@ -4,8 +4,79 @@ All notable changes to Breadcrumb are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The Leadline merge is the **0.4.0** release; **0.5.0** is the Phase A “Proof”
-release; **0.6.0** is the Phase B “Memory” release. The version in
-`app/__init__.py` is `0.6.0`.
+release; **0.6.0** is the Phase B “Memory” release; **0.7.0** is the Phase C
+“Report” release. The version in `app/__init__.py` is `0.7.0`.
+
+## [0.7.0] — 2026-11-11
+
+Phase C turns evidence into a submission-ready artifact without leaving the
+laptop: five built-in report templates, default-on redaction, a verifiable
+offline review bundle, and DefectDojo/Ghostwriter/Dradis exports.
+
+### Added — report studio and templates
+
+- `app/report_templates.py`: typed template registry with five built-ins:
+  `hackerone`, `executive`, `technical`, `recon` and `change`.
+- One validated, redacted context rendered to Markdown, self-contained HTML,
+  JSON and PDF; golden Markdown snapshots under `tests/golden/phase_c/` keep
+  the formats aligned.
+- Report studio at `/programs/<id>/reports` with live preview, field-level
+  validation, template picker and downloads. Single-finding technical reports
+  via `finding_id`; severity floor and finding caps.
+- Routes: `GET /programs/<id>/reports`, `GET /programs/<id>/reports/preview`,
+  `GET /reports/<id>/templates/<template>.<fmt>` and
+  `GET /api/v1/report-templates`.
+- CLI: `render`, `bundle`, `verify-bundle` and `report-templates`; shared
+  `--var`, `--redaction-profile`, `--redaction-rule` and `--reveal` flags.
+- Change reports reuse Diff v2 categories; false positives are filtered before
+  counts are computed. User-entered report fields and evidence are escaped in
+  HTML/PDF.
+
+### Added — default-on redaction
+
+- `app/redaction.py`: auth headers, cookies, bearer/JWT tokens, URL credentials,
+  query tokens, key/value secrets, session ids, AWS/GitHub/Slack tokens,
+  private keys and sensitive entity values are masked by default.
+- Strict profile additionally masks long hex/base64 values.
+- Per-report custom rules (`literal:` / `regex:`) are additive and capped at
+  100; malformed rules fail validation. Rule text is never echoed into report
+  JSON or bundle metadata.
+- `reveal` is explicit and disables masking; bundles remain verifiable but
+  produce a warning. Legacy exporters (`md`, `json`, `csv`, `targets`,
+  `hackerone`, `sarif`) now redact finding text by default too.
+
+### Added — review bundle and integrations
+
+- `app/review_bundle.py`: deterministic zip with `report.html`, `report.md`,
+  `report.json`, optional `report.pdf`, redacted per-capture Evidence Manifest
+  v2 files, `manifest.json`, `manifest.sha256`, `SHA256SUMS`, `README.txt` and
+  optional redacted `comments.md`.
+- In-memory verifier rejects path traversal, absolute/Windows paths, duplicate
+  entries, symlinks, encrypted entries, oversized archives, missing files,
+  unlisted files and hash mismatches; verifies nested capture chains.
+- `POST /reports/<id>/bundle`; download headers report the included capture
+  count.
+- DefectDojo Generic Findings Import JSON at `/reports/<id>/defectdojo`;
+  Ghostwriter bridge JSON at `/reports/<id>/ghostwriter`; Dradis note Markdown
+  at `/reports/<id>/dradis.md`. `export` gained `defectdojo`, `ghostwriter` and
+  `dradis` formats.
+
+### Docs
+
+- `docs/REPORT_COOKBOOK.md`, `docs/REDACTION_GUIDE.md` and
+  `docs/INTEGRATION_MAPPINGS.md`; README route/CLI/API examples and the docs
+  index updated. `tests/test_docs.py` now guards the Phase C routes.
+
+### Compatibility
+
+- Schema remains **6**; no migration is required from 0.6.0.
+- Existing routes, exports, tags and the offline-first, SQLite-only,
+  no-telemetry defaults are unchanged. The report bundle is additive and
+  read-only.
+- DefectDojo/Ghostwriter exports are validated against their documented field
+  vocabularies; importing into a specific test instance remains an operator
+  acceptance check. Ghostwriter has no single stable file-import schema, so its
+  export is a documented bridge JSON.
 
 ## [0.6.0] — 2026-11-10
 

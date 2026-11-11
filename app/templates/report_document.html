@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="generator" content="Breadcrumb {{ generator.version }}">
+  <title>{{ title }}</title>
+  <style>
+    :root {
+      --ink: #111827; --muted: #6b7280; --line: #e5e7eb; --panel: #f9fafb;
+      --accent: #0e7490; --danger: #b91c1c; --warn: #b45309; --ok: #047857;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; color: var(--ink); background: #fff;
+      font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    main.report { max-width: 980px; margin: 0 auto; padding: 38px 40px 64px; }
+    h1, h2, h3, h4 { line-height: 1.2; margin: 0 0 .35em; }
+    h1 { font-size: 30px; letter-spacing: -.02em; }
+    h2 { font-size: 21px; margin-top: 34px; padding-top: 14px; border-top: 1px solid var(--line); }
+    h3 { font-size: 16px; margin-top: 22px; }
+    h4 { font-size: 14px; margin-top: 16px; }
+    p { margin: 0 0 .8em; }
+    a { color: var(--accent); }
+    code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    code { font-size: .92em; background: #f3f4f6; padding: 1px 4px; border-radius: 3px; }
+    pre {
+      background: var(--panel); border: 1px solid var(--line); border-left: 3px solid #9ca3af;
+      border-radius: 4px; padding: 10px 12px; overflow-wrap: anywhere; white-space: pre-wrap;
+      font-size: 12.5px; line-height: 1.45;
+    }
+    .cover { border-bottom: 4px solid var(--accent); padding-bottom: 20px; margin-bottom: 8px; }
+    .classification {
+      display: inline-block; border: 1px solid #fecaca; background: #fef2f2;
+      color: var(--danger); font-weight: 700; font-size: 11px; letter-spacing: .08em;
+      padding: 3px 8px; border-radius: 3px; margin-bottom: 14px;
+    }
+    .classification.internal { border-color: #fde68a; background: #fffbeb; color: var(--warn); }
+    .classification.public { border-color: #a7f3d0; background: #ecfdf5; color: var(--ok); }
+    .brand { color: var(--accent); font-weight: 800; letter-spacing: .16em; font-size: 11px; margin: 0 0 6px; }
+    .subtitle { color: var(--muted); font-size: 15px; margin: 2px 0 16px; }
+    .meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px 24px; margin: 0 0 14px; }
+    .meta div { border-top: 1px solid var(--line); padding-top: 5px; }
+    .meta dt { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; }
+    .meta dd { margin: 1px 0 0; font-weight: 600; overflow-wrap: anywhere; }
+    .notice, .redaction, .warning {
+      border-radius: 4px; padding: 10px 12px; margin: 12px 0; font-size: 13px;
+    }
+    .notice { border: 1px solid #fecaca; border-left: 4px solid var(--danger); background: #fef2f2; color: #7f1d1d; }
+    .redaction { border: 1px solid #bae6fd; border-left: 4px solid var(--accent); background: #f0f9ff; color: #0c4a6e; }
+    .warning { border: 1px solid #fde68a; border-left: 4px solid var(--warn); background: #fffbeb; color: #78350f; font-weight: 600; }
+    .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 14px 0 18px; }
+    .tile { border: 1px solid var(--line); border-radius: 5px; padding: 10px 12px; background: var(--panel); }
+    .tile .k { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; display: block; }
+    .tile .v { font-size: 22px; font-weight: 700; display: block; margin-top: 2px; }
+    .tile .d { color: var(--muted); font-size: 11.5px; }
+    table { width: 100%; border-collapse: collapse; margin: 10px 0 18px; font-size: 13px; }
+    th, td { text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); padding: 7px 8px; }
+    th { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; background: var(--panel); }
+    td { overflow-wrap: anywhere; }
+    .sev { display: inline-block; border-radius: 3px; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: .05em; padding: 2px 6px; text-transform: uppercase; }
+    .sev-critical { background: #dc2626; } .sev-high { background: #ea580c; }
+    .sev-medium { background: #ca8a04; } .sev-low { background: #2563eb; }
+    .sev-info { background: #6b7280; }
+    .chip { display: inline-block; border: 1px solid var(--line); border-radius: 10px; padding: 1px 7px; font-size: 11px; color: #374151; background: #fff; margin: 1px 3px 1px 0; }
+    .pill-ok { color: var(--ok); border-color: #a7f3d0; background: #ecfdf5; }
+    .pill-out { color: var(--danger); border-color: #fecaca; background: #fef2f2; }
+    .pill-unknown { color: var(--muted); }
+    .prose { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .finding { border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px; margin: 18px 0; page-break-inside: avoid; }
+    .finding-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin-bottom: 8px; }
+    .finding-head h3 { margin: 0; }
+    .finding-meta { color: var(--muted); font-size: 12px; margin-bottom: 10px; overflow-wrap: anywhere; }
+    .label { color: var(--muted); font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; margin: 12px 0 3px; }
+    .empty { color: var(--muted); font-style: italic; }
+    .footer { margin-top: 40px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11.5px; }
+    .footer strong { color: var(--danger); }
+    .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    @media (max-width: 720px) { main.report { padding: 22px 18px 40px; } .cols { grid-template-columns: 1fr; } }
+    @media print {
+      main.report { max-width: none; padding: 0; }
+      h2 { page-break-after: avoid; }
+      .finding { break-inside: avoid; }
+      a { color: inherit; text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+<main class="report">
+  <header class="cover">
+    <div class="classification {{ confidentiality }}">{{ confidentiality_label }}</div>
+    <p class="brand">BREADCRUMB</p>
+    <h1>{{ title }}</h1>
+    <p class="subtitle">
+      {{ program.name }}{% if program.platform %} · {{ program.platform }}{% endif %}
+    </p>
+    <dl class="meta">
+      {% if client %}<div><dt>Client</dt><dd>{{ client }}</dd></div>{% endif %}
+      {% if author %}<div><dt>Author</dt><dd>{{ author }}</dd></div>{% endif %}
+      {% if engagement %}<div><dt>Engagement</dt><dd>{{ engagement }}</dd></div>{% endif %}
+      <div><dt>Report date</dt><dd>{{ report_date }}</dd></div>
+      <div><dt>Generated</dt><dd>{{ generated_at }}</dd></div>
+      <div><dt>Reference</dt><dd class="mono">{{ report_reference }}</dd></div>
+      <div><dt>Template</dt><dd>{{ template.name }}</dd></div>
+    </dl>
+    <div class="notice">
+      This report contains security-sensitive information about the assessed
+      target. Distribute only to authorized recipients. Findings are based on
+      reconnaissance and must be validated before being treated as confirmed
+      vulnerabilities.
+    </div>
+    {% if redaction.enabled %}
+    <div class="redaction">
+      Redaction: <strong>{{ redaction.profile }}</strong> profile,
+      {{ redaction.custom_rules }} custom rule(s). Authentication headers,
+      cookies, tokens, keys and secret values are masked. Evidence values are
+      shown only as redacted text; raw captures never leave the local database.
+    </div>
+    {% elif variables.reveal %}
+    <div class="warning">
+      Secret masking is disabled for this report (<code>reveal</code>). Do not
+      share it outside the authorized assessment team.
+    </div>
+    {% endif %}
+  </header>
+
+  {% if executive_summary and ('summary' in template.sections or 'risk' in template.sections) %}
+  <section>
+    <h2>Executive summary</h2>
+    <div class="prose">{{ executive_summary }}</div>
+  </section>
+  {% endif %}
+
+  {% if business_context and 'risk' in template.sections %}
+  <section>
+    <h2>Business context</h2>
+    <div class="prose">{{ business_context }}</div>
+  </section>
+  {% endif %}
+
+  {% if 'summary' in template.sections %}
+  <section>
+    <h2>Summary</h2>
+    <div class="tiles">
+      <div class="tile"><span class="k">Risk</span><span class="v">{{ summary.risk_level }}</span><span class="d">{{ summary.risk_score }}/100</span></div>
+      <div class="tile"><span class="k">Findings</span><span class="v">{{ summary.total_findings }}</span><span class="d">{{ summary.verified_findings }} verified</span></div>
+      <div class="tile"><span class="k">Entities</span><span class="v">{{ summary.entity_count }}</span><span class="d">{{ summary.target_count }} target(s)</span></div>
+      <div class="tile"><span class="k">Captures</span><span class="v">{{ summary.capture_count }}</span><span class="d">{{ summary.in_scope_entities }} in scope</span></div>
+    </div>
+    <table>
+      <tbody>
+        <tr><th>Severity</th><td>{% for sev, count in summary.severity_counts.items() %}<span class="chip">{{ sev }} × {{ count }}</span>{% else %}<span class="empty">none</span>{% endfor %}</td></tr>
+        <tr><th>Scope</th><td>{{ summary.in_scope_entities }} in · {{ summary.out_of_scope_entities }} out · {{ summary.unknown_scope_entities }} unknown</td></tr>
+        <tr><th>Entity types</th><td>{% for etype, count in summary.entity_counts.items() %}<span class="chip">{{ etype }} × {{ count }}</span>{% endfor %}</td></tr>
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  {% if 'risk' in template.sections %}
+  <section>
+    <h2>Risk overview</h2>
+    <p>
+      <strong>{{ summary.risk_level|upper }}</strong> — score
+      {{ summary.risk_score }}/100. Scores are derived from active findings;
+      false positives and unverified CVE candidates are excluded.
+    </p>
+    <p class="muted">
+      Every finding below links back to sealed evidence in the local Breadcrumb
+      database. Evidence hashes and capture manifests are included in the review
+      bundle when one is exported.
+    </p>
+  </section>
+  {% endif %}
+
+  {% if 'highlights' in template.sections and highlights %}
+  <section>
+    <h2>Top findings</h2>
+    <ul>
+      {% for item in highlights %}
+      <li>
+        <span class="sev sev-{{ item.severity }}">{{ item.severity }}</span>
+        <strong>{{ item.title }}</strong>
+        {% if item.verified %}<span class="chip pill-ok">verified</span>{% endif %}
+        <span class="muted">— {{ item.explanation }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% if 'scope' in template.sections and variables.include_scope and (program.scope_in or program.scope_out) %}
+  <section>
+    <h2>Scope</h2>
+    <div class="cols">
+      <div><h3>In scope</h3><pre>{{ program.scope_in or '—' }}</pre></div>
+      <div><h3>Out of scope</h3><pre>{{ program.scope_out or '—' }}</pre></div>
+    </div>
+  </section>
+  {% endif %}
+
+  {% if 'targets' in template.sections and variables.include_targets and targets %}
+  <section>
+    <h2>Targets</h2>
+    <table>
+      <thead><tr><th>Target</th><th>Kind</th><th>Notes</th></tr></thead>
+      <tbody>
+        {% for target in targets %}
+        <tr><td class="mono">{{ target.name }}</td><td>{{ target.kind }}</td><td>{{ target.notes or '—' }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  {% if 'inventory' in template.sections and variables.include_inventory %}
+  <section>
+    <h2>Attack-surface inventory</h2>
+    {% if not entity_groups %}<p class="empty">No entities collected.</p>{% endif %}
+    {% for group in entity_groups %}
+    <h3>{{ group.label }} <span class="count">({{ group.count }})</span></h3>
+    <table>
+      <thead><tr><th>Value</th><th>Scope</th><th>HTTP</th><th>Tags</th></tr></thead>
+      <tbody>
+        {% for item in group["values"] %}
+        <tr>
+          <td class="mono">{{ item.value }}</td>
+          <td><span class="chip pill-{{ item.scope_status }}">{{ item.scope_status }}</span></td>
+          <td>{{ item.status_code or '—' }}</td>
+          <td>{% for tag in item.tags %}<span class="chip">#{{ tag }}</span>{% endfor %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if group.truncated %}
+    <p class="empty">…and {{ group.truncated }} more (export JSON for the full list).</p>
+    {% endif %}
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  {% if ('changes' in template.sections or variables.include_changes) %}
+  <section>
+    <h2>Change summary</h2>
+    {% if not changes or not changes.available %}
+    <p class="empty">{{ (changes.reason if changes else '') or 'No change data is available.' }}</p>
+    {% else %}
+    <p>
+      Compared <strong>{{ changes.left.label or changes.left.selector }}</strong>
+      → <strong>{{ changes.right.label or changes.right.selector }}</strong>.
+    </p>
+    <div class="tiles">
+      <div class="tile"><span class="k">New findings</span><span class="v">{{ changes.summary.new_findings or 0 }}</span><span class="d">{{ changes.summary.removed_findings or 0 }} disappeared</span></div>
+      <div class="tile"><span class="k">Ports opened</span><span class="v">{{ changes.summary.ports_opened or 0 }}</span><span class="d">{{ changes.summary.ports_closed or 0 }} closed</span></div>
+      <div class="tile"><span class="k">Endpoints added</span><span class="v">{{ changes.summary.endpoints_added or 0 }}</span><span class="d">{{ changes.summary.endpoints_removed or 0 }} removed</span></div>
+      <div class="tile"><span class="k">Risk</span><span class="v">{{ changes.summary.risk_before or 0 }} → {{ changes.summary.risk_after or 0 }}</span><span class="d">{{ changes.risk.direction or 'unchanged' }}</span></div>
+    </div>
+    {% if changes.findings_new %}
+    <h3>New findings</h3>
+    <table>
+      <thead><tr><th>Severity</th><th>Finding</th><th>Location</th></tr></thead>
+      <tbody>
+        {% for item in changes.findings_new %}
+        <tr><td><span class="sev sev-{{ item.severity }}">{{ item.severity }}</span></td><td>{{ item.title }}</td><td class="mono">{{ item.location or '—' }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% if changes.findings_removed %}
+    <h3>Disappeared findings</h3>
+    <ul>{% for item in changes.findings_removed %}<li><span class="sev sev-{{ item.severity }}">{{ item.severity }}</span> {{ item.title }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% if changes.findings_changed %}
+    <h3>Changed findings</h3>
+    <ul>
+      {% for item in changes.findings_changed %}
+      <li>
+        <strong>{{ item.title }}</strong>
+        {% for change in item.changes %}<span class="chip">{{ change.field }}: {{ change.before }} → {{ change.after }}</span>{% endfor %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% if changes.ports_opened %}
+    <h3>Ports opened</h3>
+    <table>
+      <thead><tr><th>Port</th><th>Service</th><th>Version</th></tr></thead>
+      <tbody>
+        {% for item in changes.ports_opened %}<tr><td class="mono">{{ item.port }}</td><td>{{ item.service or '—' }}</td><td>{{ item.version or '—' }}</td></tr>{% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% if changes.ports_closed %}
+    <h3>Ports closed</h3>
+    <ul>{% for item in changes.ports_closed %}<li class="mono">{{ item.port }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% if changes.endpoints_added or changes.endpoints_removed %}
+    <h3>Endpoint changes</h3>
+    <ul>
+      {% for value in changes.endpoints_added %}<li>added <code>{{ value }}</code></li>{% endfor %}
+      {% for value in changes.endpoints_removed %}<li>removed <code>{{ value }}</code></li>{% endfor %}
+    </ul>
+    {% endif %}
+    {% if changes.technologies_added or changes.technologies_removed %}
+    <h3>Technology changes</h3>
+    <ul>
+      {% for value in changes.technologies_added %}<li>added {{ value }}</li>{% endfor %}
+      {% for value in changes.technologies_removed %}<li>removed {{ value }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+    {% if changes.dns_added or changes.dns_removed %}
+    <h3>DNS changes</h3>
+    <ul>
+      {% for item in changes.dns_added %}<li>added <span class="mono">{{ item.rtype }} {{ item.name }} {{ item.value }}</span></li>{% endfor %}
+      {% for item in changes.dns_removed %}<li>removed <span class="mono">{{ item.rtype }} {{ item.name }} {{ item.value }}</span></li>{% endfor %}
+    </ul>
+    {% endif %}
+    {% if changes.entities_added or changes.entities_removed %}
+    <h3>Entities added / removed</h3>
+    <ul>
+      {% for item in changes.entities_added %}<li>added <span class="chip">{{ item.type }}</span> <span class="mono">{{ item.value }}</span></li>{% endfor %}
+      {% for item in changes.entities_removed %}<li>removed <span class="chip">{{ item.type }}</span> <span class="mono">{{ item.value }}</span></li>{% endfor %}
+    </ul>
+    {% endif %}
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if 'findings' in template.sections and variables.include_findings %}
+  <section>
+    <h2>Findings ({{ findings_total }})</h2>
+    {% if not findings %}<p class="empty">No active findings at the selected severity.</p>{% endif %}
+    {% for finding in findings %}
+    <article class="finding">
+      <div class="finding-head">
+        <span class="sev sev-{{ finding.severity }}">{{ finding.severity }}</span>
+        <h3>{{ finding.ref }} — {{ finding.title }}</h3>
+      </div>
+      <div class="finding-meta">
+        Status: {{ finding.status }}
+        {% if finding.verified %} · <span class="chip pill-ok">verified</span>{% endif %}
+        {% if finding.cvss %} · CVSS {{ finding.cvss }}{% endif %}
+        {% if finding.cve %} · {{ finding.cve }}{% endif %}
+        {% if finding.location %} · <span class="mono">{{ finding.location }}</span>{% endif %}
+      </div>
+      {% if finding.description %}<div class="label">Description</div><div class="prose">{{ finding.description }}</div>{% endif %}
+      {% if finding.steps %}<div class="label">Steps to reproduce</div><div class="prose">{{ finding.steps }}</div>{% endif %}
+      {% if finding.impact %}<div class="label">Impact</div><div class="prose">{{ finding.impact }}</div>{% endif %}
+      {% if finding.evidence %}<div class="label">Evidence</div><pre>{{ finding.evidence }}</pre>{% endif %}
+      {% if finding.remediation %}<div class="label">Remediation</div><div class="prose">{{ finding.remediation }}</div>{% endif %}
+      {% if finding.tags %}<div class="label">Tags</div><p>{% for tag in finding.tags %}<span class="chip">#{{ tag }}</span>{% endfor %}</p>{% endif %}
+    </article>
+    {% endfor %}
+    {% if findings_total > findings_shown %}
+    <p class="empty">Showing the first {{ findings_shown }} of {{ findings_total }} findings. Raise “Maximum findings” or export JSON for the full list.</p>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if 'findings_table' in template.sections and variables.include_findings %}
+  <section>
+    <h2>Findings overview ({{ findings_total }})</h2>
+    {% if findings %}
+    <table>
+      <thead><tr><th>Ref</th><th>Severity</th><th>Finding</th><th>Status</th><th>Location</th></tr></thead>
+      <tbody>
+        {% for finding in findings %}
+        <tr>
+          <td>{{ finding.ref }}</td>
+          <td><span class="sev sev-{{ finding.severity }}">{{ finding.severity }}</span></td>
+          <td>{{ finding.title }}</td>
+          <td>{{ finding.status }}</td>
+          <td class="mono">{{ finding.location or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty">No active findings at the selected severity.</p>
+    {% endif %}
+    {% if findings_total > findings_shown %}
+    <p class="empty">Showing the first {{ findings_shown }} of {{ findings_total }} findings.</p>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if recommendations and 'recommendations' in template.sections %}
+  <section>
+    <h2>Recommendations</h2>
+    <div class="prose">{{ recommendations }}</div>
+  </section>
+  {% endif %}
+
+  {% if methodology and 'methodology' in template.sections %}
+  <section>
+    <h2>Methodology</h2>
+    <div class="prose">{{ methodology }}</div>
+  </section>
+  {% endif %}
+
+  <footer class="footer">
+    <p><strong>{{ confidentiality_label }}</strong> · Generated by Breadcrumb {{ generator.version }} on {{ generated_at }}.</p>
+    {% if footer %}<p>{{ footer }}</p>{% endif %}
+    <p>Report reference: <span class="mono">{{ report_reference }}</span>. Findings are based on reconnaissance and may include false positives; validate before submission.</p>
+  </footer>
+</main>
+</body>
+</html>

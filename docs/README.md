@@ -1,9 +1,9 @@
 # Breadcrumb + Leadline planning documents
 
-Status: **Phase B of the flagship plan is implemented and released as `0.6.0`
-(2026-11-10). Phase A is `0.5.0` (2026-11-09). Phases 0–8 are implemented and
-released as `0.4.0` (2026-11-08). The `v0.4.0` tag remains intact; 0.5.0 and
-0.6.0 are additive.**
+Status: **Phase C of the flagship plan is implemented and released as `0.7.0`
+(2026-11-11). Phase B is `0.6.0` (2026-11-10), Phase A is `0.5.0`
+(2026-11-09), and Phases 0–8 are implemented and released as `0.4.0`
+(2026-11-08). The `v0.4.0` tag remains intact; 0.5.0–0.7.0 are additive.**
 Included: durable job queue/worker, scope guard, encrypted-at-rest
 header-profile secrets, the twelve-phase `leadline-recon` preset (DNS, host
 intel, ports/TLS, HTTP, tech, JS, params, headers, API, vuln candidates, CVE
@@ -22,7 +22,9 @@ a flagship plan for the evidence-first recon notebook. Phase A (0.5.0) now
 implements the proof slice: parser contract, import reports/completeness,
 Evidence Manifest v2, `breadcrumb doctor`, sample demo, and a benchmark
 harness. Phase B (0.6.0) implements the memory slice: Ledger v2, Diff v2,
-Scope v2 and Graph v2.
+Scope v2 and Graph v2. Phase C (0.7.0) implements the report slice: five
+templates, default-on redaction, a verifiable offline review bundle, and
+HackerOne/DefectDojo/Ghostwriter/Dradis/SARIF exports.
 Date: 2026-10-27 to 2026-11-08
 Repos inspected:
 
@@ -45,8 +47,8 @@ no code. The implementation is additive and is released as `0.4.0`.
 | Legacy schema backfill | Implemented | `chain_seq`, `capture_key`, `evidencechain` migration test |
 
 Test baseline after Phase 0: **72 passed, 1 warning** (historical).
-Current suite after the native-executor, secrets, Phase 4, Phase 5, Phase 6,
-Phase 7, Phase 8 and Phase A slices: **195 passed, 1 warning**.
+Current suite after the native-executor, secrets, Phases 4–8 and Phases A–C:
+**234 passed, 1 warning** (2026-11-11).
 
 ## Native-executor vertical slice (2026-11-06)
 
@@ -226,6 +228,16 @@ Operational documents added by Phase B:
 22. **[SCOPE_DECISIONS.md](SCOPE_DECISIONS.md)** — rule shapes, precedence,
     reason codes, status filters, per-rule severity overrides and bulk re-scope.
 
+Operational documents added by Phase C:
+
+23. **[REPORT_COOKBOOK.md](REPORT_COOKBOOK.md)** — the five templates, typed
+    variables, formats, review-bundle anatomy, golden tests and troubleshooting.
+24. **[REDACTION_GUIDE.md](REDACTION_GUIDE.md)** — default rules, strict profile,
+    custom rules, reveal, bundle enforcement, threat model and audit checklist.
+25. **[INTEGRATION_MAPPINGS.md](INTEGRATION_MAPPINGS.md)** — HackerOne,
+    DefectDojo, Ghostwriter, Dradis, SARIF, CSV/JSON/targets field mappings and
+    compatibility notes.
+
 ## One-paragraph summary
 
 Breadcrumb should remain the flagship product and system of record. Leadline’s
@@ -249,7 +261,7 @@ Phase 8 hardening runbooks are complete.
 | Check | Result |
 |---|---|
 | Breadcrumb tests (planning baseline) | `62 passed, 1 warning in 1.91s` (`.venv/bin/python -m pytest -q`) |
-| Breadcrumb tests (current slice) | `182 passed, 1 warning` (`.venv/bin/python -m pytest -q`) |
+| Breadcrumb tests (current slice) | `234 passed, 1 warning` (`.venv/bin/python -m pytest -q`) |
 | Leadline tests | `41 passed, 7 warnings in 30.80s` (`/tmp/opencode/leadline-venv/bin/python -m pytest -q`) |
 | Breadcrumb stack | FastAPI, SQLModel, SQLite, Jinja UI, ~7,723 LOC Python |
 | Leadline stack | FastAPI, async SQLAlchemy, SQLite, React/Vite UI, ~8,265 LOC Python + ~2,317 LOC UI |

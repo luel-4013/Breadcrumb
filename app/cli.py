@@ -4,6 +4,9 @@ Same engine as the web UI and API v1, no server required:
 
     python -m app.cli ingest scan.txt --program 1
     python -m app.cli export 1 --format sarif -o out.sarif
+    python -m app.cli render 1 --template hackerone --format md -o report.md
+    python -m app.cli bundle 1 --template technical -o review.zip
+    python -m app.cli verify-bundle review.zip
     python -m app.cli gate 1 --max-severity high   # exit 1 if it fails
     python -m app.cli worker --once                # run native collectors once
     python -m app.cli maintenance on --reason backup
@@ -22,7 +25,7 @@ from pathlib import Path
 
 from sqlmodel import Session, select
 
-from . import __version__, reporting
+from . import __version__, report_templates, reporting
 from .db import engine, init_db
 from .models import Entity, Finding, Program
 
@@ -306,11 +309,19 @@ def cmd_export(args) -> int:
         if fmt == "md":
             text = reporting.to_markdown(session, args.program, mask=not args.reveal)
         elif fmt == "h1":
-            text = reporting.to_hackerone(session, args.program)
+            text = reporting.to_hackerone(
+                session, args.program, mask=not args.reveal
+            )
+        elif fmt == "dradis":
+            text = reporting.to_dradis_markdown(
+                session, args.program, mask=not args.reveal
+            )
         elif fmt == "csv":
             text = reporting.to_csv(session, args.program, mask=not args.reveal)
         elif fmt == "targets":
-            text = reporting.targets_txt(session, args.program)
+            text = reporting.targets_txt(
+                session, args.program, mask=not args.reveal
+            )
         elif fmt == "json":
             text = json.dumps(
                 reporting.to_dict(session, args.program, mask=not args.reveal), indent=2
@@ -318,6 +329,20 @@ def cmd_export(args) -> int:
         elif fmt == "sarif":
             text = json.dumps(
                 reporting.to_sarif(session, args.program, mask=not args.reveal), indent=2
+            )
+        elif fmt == "defectdojo":
+            text = json.dumps(
+                reporting.to_defectdojo(
+                    session, args.program, mask=not args.reveal
+                ),
+                indent=2,
+            )
+        elif fmt == "ghostwriter":
+            text = json.dumps(
+                reporting.to_ghostwriter(
+                    session, args.program, mask=not args.reveal
+                ),
+                indent=2,
             )
         else:
             print(f"unknown format {fmt}", file=sys.stderr)
@@ -1262,6 +1287,137 @@ def cmd_report(args) -> int:
     return 0
 
 
+def _template_values(args) -> dict:
+    values: dict = {}
+    for item in getattr(args, "var", None) or []:
+        if "=" not in item:
+            raise ValueError(f"--var must be key=value, got {item!r}")
+        key, value = item.split("=", 1)
+        if not key.strip():
+            raise ValueError("--var key cannot be empty")
+        values[key.strip()] = value
+    values["redaction_profile"] = getattr(args, "redaction_profile", "default")
+    values["reveal"] = bool(getattr(args, "reveal", False))
+    rules = getattr(args, "redaction_rule", None) or []
+    if rules:
+        values["redaction_rules"] = "\n".join(rules)
+    return values
+
+
+def cmd_render(args) -> int:
+    """Render one built-in report template from a program's evidence."""
+    init_db()
+    with Session(engine) as session:
+        if session.get(Program, args.program) is None:
+            print(f"render: program {args.program} not found", file=sys.stderr)
+            return 1
+        try:
+            context = report_templates.build_context(
+                session,
+                args.program,
+                args.template,
+                _template_values(args),
+            )
+            content = report_templates.render(context, args.format)
+        except report_templates.TemplateError as exc:
+            print("render: " + "; ".join(exc.errors), file=sys.stderr)
+            return 2
+        if isinstance(content, bytes):
+            if not args.output:
+                print("render: PDF output requires -o/--output", file=sys.stderr)
+                return 2
+            path = Path(args.output).expanduser()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+            print(f"wrote {path}")
+            return 0
+        if args.output:
+            path = Path(args.output).expanduser()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+            print(f"wrote {path}")
+        else:
+            sys.stdout.write(content)
+    return 0
+
+
+def cmd_bundle(args) -> int:
+    """Build an offline review bundle zip."""
+    from . import review_bundle
+
+    init_db()
+    with Session(engine) as session:
+        if session.get(Program, args.program) is None:
+            print(f"bundle: program {args.program} not found", file=sys.stderr)
+            return 1
+        comments = ""
+        if args.comments:
+            comments = _read_input(args.comments)
+        try:
+            data, manifest = review_bundle.build_bundle(
+                session,
+                args.program,
+                args.template,
+                _template_values(args),
+                comments=comments,
+                include_pdf=args.include_pdf,
+            )
+        except report_templates.TemplateError as exc:
+            print("bundle: " + "; ".join(exc.errors), file=sys.stderr)
+            return 2
+        output = args.output or review_bundle.bundle_filename(manifest)
+        path = Path(output).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        report = manifest.get("report") or {}
+        print(
+            f"wrote {path} ({manifest.get('file_count', 0)} files, "
+            f"{manifest.get('captures_included', 0)} capture manifest(s), "
+            f"redaction {(report.get('redaction') or {}).get('profile', 'default')})"
+        )
+    return 0
+
+
+def cmd_verify_bundle(args) -> int:
+    """Verify an offline review bundle without extracting it."""
+    from . import review_bundle
+
+    try:
+        result = review_bundle.verify_bundle_file(args.file)
+    except OSError as exc:
+        print(f"verify-bundle: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        summary = result.get("summary") or {}
+        print(
+            f"bundle: {'OK' if result.get('valid') else 'FAILED'}"
+            + (f" — {summary.get('title')}" if summary.get("title") else "")
+        )
+        for check in result.get("checks") or []:
+            if not check.get("ok"):
+                print(f"  FAIL {check.get('name')}: {check.get('detail')}")
+        for warning in result.get("warnings") or []:
+            print(f"  WARNING {warning}")
+        if result.get("valid"):
+            print(
+                f"  {summary.get('files', 0)} file(s), "
+                f"{summary.get('captures', 0)} capture manifest(s), "
+                f"redaction {summary.get('redaction') or 'default'}"
+            )
+    return 0 if result.get("valid") else 1
+
+
+def cmd_report_templates(args) -> int:  # noqa: ARG001
+    """List built-in report templates for scripts and shell completion."""
+    for template in report_templates.list_templates():
+        print(f"{template.id:<12} {template.name}")
+        print(f"  {template.description}")
+        print(f"  variables: {', '.join(v.key for v in template.variables)}")
+    return 0
+
+
 def cmd_version(args) -> int:  # noqa: ARG001
     print(f"breadcrumb {__version__}")
     return 0
@@ -1331,7 +1487,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("export", help="export a program report")
     p.add_argument("program", type=int)
     p.add_argument("--format", default="md",
-                   choices=["md", "json", "csv", "h1", "targets", "sarif"])
+                   choices=["md", "json", "csv", "h1", "targets", "sarif",
+                            "defectdojo", "ghostwriter", "dradis"])
     p.add_argument("-o", "--output", default="")
     p.add_argument("--reveal", action="store_true", help="do not mask secrets")
     p.set_defaults(func=cmd_export)
@@ -1396,6 +1553,64 @@ def build_parser() -> argparse.ArgumentParser:
         help="keep false-positive findings (internal reports)",
     )
     p.set_defaults(func=cmd_report)
+
+    def _report_args(p, *, output: bool = True) -> None:
+        p.add_argument(
+            "--template",
+            default="hackerone",
+            choices=list(report_templates.TEMPLATE_IDS),
+        )
+        p.add_argument(
+            "--var",
+            action="append",
+            default=[],
+            metavar="KEY=VALUE",
+            help="set a template variable (repeatable)",
+        )
+        p.add_argument(
+            "--redaction-profile",
+            default="default",
+            choices=["default", "strict"],
+        )
+        p.add_argument(
+            "--redaction-rule",
+            action="append",
+            default=[],
+            metavar="RULE",
+            help="literal:text=replacement or regex:pattern=replacement (repeatable)",
+        )
+        p.add_argument(
+            "--reveal",
+            action="store_true",
+            help="explicitly disable all masking (unsafe)",
+        )
+        if output:
+            p.add_argument("-o", "--output", default="")
+
+    p = sub.add_parser("render", help="render a built-in report template")
+    p.add_argument("program", type=int)
+    p.add_argument("--format", default="md", choices=["md", "markdown", "html", "json", "pdf"])
+    _report_args(p)
+    p.set_defaults(func=cmd_render)
+
+    p = sub.add_parser("bundle", help="build an offline review bundle zip")
+    p.add_argument("program", type=int)
+    _report_args(p)
+    p.add_argument(
+        "--comments",
+        default="",
+        help="file containing reviewer comments (redacted before inclusion)",
+    )
+    p.add_argument("--include-pdf", action="store_true")
+    p.set_defaults(func=cmd_bundle)
+
+    p = sub.add_parser("verify-bundle", help="verify an offline review bundle zip")
+    p.add_argument("file")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_verify_bundle)
+
+    p = sub.add_parser("report-templates", help="list built-in report templates")
+    p.set_defaults(func=cmd_report_templates)
 
     p = sub.add_parser("diff", help="compare two captures, targets, programs, or jobs")
     p.add_argument("left", help="left selector, e.g. paste:12, target:3, program:1, job:9")

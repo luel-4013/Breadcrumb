@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+{% block title %}Report studio · {{ program.name }} · Breadcrumb{% endblock %}
+{% block crumb %}
+  <a href="/programs/{{ program.id }}">{{ program.name }}</a>
+  <span class="sep">·</span> <span class="sub">Report studio</span>
+{% endblock %}
+
+{% block actions %}
+  <a class="btn ghost sm" href="/programs/{{ program.id }}">Back to program</a>
+  <a class="btn ghost sm" href="/reports/{{ program.id }}/html">Classic report</a>
+{% endblock %}
+
+{% block content %}
+<div class="spread">
+  <div>
+    <h1>Report studio</h1>
+    <p class="muted">
+      Build a submission-ready report from local evidence. The preview, downloads
+      and review bundle all render from the same redacted context.
+    </p>
+  </div>
+  {% if report_context %}
+  <div class="tile" style="min-width:220px">
+    <span class="k">Current draft</span>
+    <span class="v">{{ report_context.summary.risk_level|upper }}</span>
+    <span class="d">
+      {{ report_context.summary.total_findings }} finding(s) ·
+      {{ report_context.summary.entity_count }} entities
+    </span>
+  </div>
+  {% endif %}
+</div>
+
+{% if errors %}
+<div class="warn-box">
+  <strong>Fix these values before exporting:</strong>
+  <ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<div class="grid" style="grid-template-columns:minmax(340px, 420px) minmax(0, 1fr); align-items:start">
+  <section class="card">
+    <h2>Template &amp; variables</h2>
+    <form method="get" action="/programs/{{ program.id }}/reports" class="stack">
+      <input type="hidden" name="submitted" value="1">
+      <label>Template
+        <select name="template" data-autosubmit>
+          {% for item in available_templates %}
+          <option value="{{ item.id }}" {% if item.id == selected_template.id %}selected{% endif %}>
+            {{ item.name }}
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+      <p class="dim">{{ selected_template.description }}</p>
+
+      {% for var in selected_template.variables %}
+        {% if var.kind == 'checkbox' %}
+        <label class="check">
+          <input type="checkbox" name="{{ var.key }}" value="1"
+                 {% if values[var.key] %}checked{% endif %}>
+          {{ var.label }}
+        </label>
+        {% elif var.kind == 'textarea' %}
+        <label>{{ var.label }}
+          <textarea name="{{ var.key }}" rows="3" maxlength="{{ var.max_length }}"
+                    placeholder="{{ var.help }}">{{ values[var.key] }}</textarea>
+        </label>
+        {% elif var.kind == 'choice' %}
+        <label>{{ var.label }}
+          <select name="{{ var.key }}">
+            {% for choice in var.choices %}
+            <option value="{{ choice }}" {% if values[var.key] == choice %}selected{% endif %}>{{ choice }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        {% elif var.kind == 'integer' %}
+        <label>{{ var.label }}
+          <input type="number" name="{{ var.key }}" value="{{ values[var.key] }}"
+                 min="{{ var.min_value }}" max="{{ var.max_value }}">
+        </label>
+        {% elif var.kind == 'date' %}
+        <label>{{ var.label }}
+          <input type="date" name="{{ var.key }}" value="{{ values[var.key] }}">
+        </label>
+        {% else %}
+        <label>{{ var.label }}
+          <input name="{{ var.key }}" value="{{ values[var.key] }}" maxlength="{{ var.max_length }}"
+                 placeholder="{{ var.help }}">
+        </label>
+        {% endif %}
+        {% if var.help and var.kind != 'textarea' %}<p class="dim">{{ var.help }}</p>{% endif %}
+      {% endfor %}
+
+      <div class="row">
+        <button class="primary" type="submit">Refresh preview</button>
+        <a class="btn ghost" href="/programs/{{ program.id }}/reports?template={{ selected_template.id }}">Reset</a>
+      </div>
+    </form>
+  </section>
+
+  <section class="card">
+    <div class="spread">
+      <h2>Preview</h2>
+      {% if report_context %}
+      <span class="chip">{{ selected_template.name }}</span>
+      {% endif %}
+    </div>
+    {% if report_context %}
+    <p class="dim">
+      Preview is the exact HTML that goes into the review bundle. Secrets are
+      masked unless <code>reveal</code> is checked.
+    </p>
+    <iframe title="Report preview" srcdoc="{{ preview_html }}"
+            style="width:100%; min-height:70vh; border:1px solid var(--border); border-radius:6px; background:#fff"></iframe>
+    {% else %}
+    <div class="empty-state">
+      <span class="es-icon">⚠</span>
+      <h3>Preview unavailable</h3>
+      <p>Fix the form errors on the left, then refresh the preview.</p>
+    </div>
+    {% endif %}
+  </section>
+</div>
+
+<section class="card">
+  <div class="spread">
+    <h2>Downloads</h2>
+    {% if report_context %}
+    <span class="chip">reference {{ report_context.report_reference }}</span>
+    {% endif %}
+  </div>
+  {% if report_context %}
+  <div class="row" style="flex-wrap:wrap; gap:8px">
+    <a class="btn" href="/reports/{{ program.id }}/templates/{{ selected_template.id }}.md?{{ query }}">Markdown</a>
+    <a class="btn" href="/reports/{{ program.id }}/templates/{{ selected_template.id }}.html?{{ query }}">HTML</a>
+    <a class="btn" href="/reports/{{ program.id }}/templates/{{ selected_template.id }}.json?{{ query }}">JSON</a>
+    <a class="btn" href="/reports/{{ program.id }}/templates/{{ selected_template.id }}.pdf?{{ query }}">PDF</a>
+    <a class="btn ghost" href="/programs/{{ program.id }}/reports/preview?{{ query }}" target="_blank" rel="noopener">Open preview</a>
+  </div>
+  {% endif %}
+
+  <h3 style="margin-top:18px">Offline review bundle</h3>
+  <p class="dim">
+    A read-only zip with HTML, Markdown, JSON, a manifest, checksums and redacted
+    capture manifests. No account or server is needed to review it.
+  </p>
+  <form method="post" action="/reports/{{ program.id }}/bundle" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+    <input type="hidden" name="template" value="{{ selected_template.id }}">
+    {% for var in selected_template.variables %}
+      {% if var.kind == 'checkbox' %}
+      <label class="check">
+        <input type="checkbox" name="{{ var.key }}" value="1"
+               {% if values[var.key] %}checked{% endif %}>
+        {{ var.label }}
+      </label>
+      {% else %}
+      <input type="hidden" name="{{ var.key }}" value="{{ values[var.key] }}">
+      {% endif %}
+    {% endfor %}
+    <label>Reviewer comments (optional)
+      <textarea name="comments" rows="3" placeholder="Questions, accepted-risk notes, or what to look at first. Redacted with the report."></textarea>
+    </label>
+    <label class="check">
+      <input type="checkbox" name="include_pdf" value="1"> Also include a PDF
+    </label>
+    <div class="row">
+      <button class="primary" type="submit">Download review bundle</button>
+    </div>
+  </form>
+
+  <h3 style="margin-top:18px">Integration exports</h3>
+  <p class="dim">
+    Same redacted findings, mapped to the importer each platform expects.
+  </p>
+  <div class="row" style="flex-wrap:wrap; gap:8px">
+    <a class="btn ghost" href="/reports/{{ program.id }}/defectdojo">DefectDojo JSON</a>
+    <a class="btn ghost" href="/reports/{{ program.id }}/ghostwriter">Ghostwriter JSON</a>
+    <a class="btn ghost" href="/reports/{{ program.id }}/dradis.md">Dradis notes</a>
+    <a class="btn ghost" href="/reports/{{ program.id }}/h1">HackerOne Markdown</a>
+    <a class="btn ghost" href="/reports/{{ program.id }}/sarif">SARIF</a>
+    <a class="btn ghost" href="/reports/{{ program.id }}/csv">CSV</a>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Review workflow</h2>
+  <ol class="muted">
+    <li>Pick a template and fill in only what the reviewer needs.</li>
+    <li>Preview locally; every value is escaped and masked by default.</li>
+    <li>Download the bundle and send the zip. The reviewer opens <code>report.html</code>; no login or Breadcrumb install is required.</li>
+    <li>They can verify integrity with <code>python -m app.cli verify-bundle review.zip</code> or <code>sha256sum -c SHA256SUMS</code>.</li>
+  </ol>
+  <p class="dim">
+    Redaction applies to the report, comments and evidence manifests. Custom
+    rules are additive and can never turn off the built-in masking. Raw capture
+    bodies stay in this local database.
+  </p>
+</section>
+{% endblock %}
