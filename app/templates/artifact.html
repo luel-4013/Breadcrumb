@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}Screenshot #{{ artifact.id }} · Breadcrumb{% endblock %}
+{% block crumb %}
+  <a href="/artifacts">Screenshots</a>
+  <span class="sep">/</span> <span class="sub">#{{ artifact.id }}</span>
+{% endblock %}
+
+{% block actions %}
+  <a class="btn ghost sm" href="/artifacts/{{ artifact.id }}/content?download=1">Download</a>
+  {% if program %}<a class="btn ghost sm" href="/programs/{{ program.id }}">Program</a>{% endif %}
+{% endblock %}
+
+{% block content %}
+{% if msg %}<div class="warn-box">{{ msg }}</div>{% endif %}
+
+<div class="grid" style="grid-template-columns:minmax(0,1.5fr) minmax(300px,1fr); align-items:start">
+  <section class="card">
+    <div class="spread">
+      <h2>Screenshot #{{ artifact.id }}</h2>
+      <span class="chip">{{ artifact.source }}</span>
+    </div>
+    <a href="/artifacts/{{ artifact.id }}/content" target="_blank" rel="noopener">
+      <img class="artifact-full" src="/artifacts/{{ artifact.id }}/content"
+           alt="Screenshot of {{ artifact.source_url or artifact.filename }}">
+    </a>
+    <p class="dim" style="margin-top:8px">
+      Click the image to open it at full size. The content endpoint verifies the
+      SHA-256 before serving; a modified or missing file returns an error.
+    </p>
+    {% if verification.exists and verification.hash_ok and verification.size_ok %}
+    <div class="ok-box"><strong>Hash verified.</strong> The stored bytes match the recorded SHA-256.</div>
+    {% else %}
+    <div class="warn-box">
+      <strong>Evidence file problem.</strong>
+      {% if verification.error %}{{ verification.error }}{% endif %}
+      {% if verification.exists and not verification.hash_ok %}The stored file no longer matches the recorded hash.{% endif %}
+    </div>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>Evidence metadata</h2>
+    <div class="kv">
+      <span class="dim">Program</span>
+      <span>{% if program %}<a href="/programs/{{ program.id }}">{{ program.name }}</a>{% else %}—{% endif %}</span>
+      <span class="dim">Target</span>
+      <span>{% if target %}<a href="/targets/{{ target.id }}/history">{{ target.name }}</a>{% else %}—{% endif %}</span>
+      <span class="dim">Finding</span>
+      <span>{% if finding %}#{{ finding.id }} {{ finding.title }}{% else %}—{% endif %}</span>
+      <span class="dim">Entity</span>
+      <span class="mono">{% if entity %}{{ entity.type }} · {{ entity.value }}{% else %}—{% endif %}</span>
+      <span class="dim">Capture</span>
+      <span>{% if paste %}<a href="/pastes/{{ paste.id }}">#{{ paste.id }}</a>{% else %}—{% endif %}</span>
+      <span class="dim">Source URL</span>
+      <span class="mono">{{ artifact.source_url or '—' }}</span>
+      <span class="dim">Filename</span>
+      <span class="mono">{{ artifact.filename or '—' }}</span>
+      <span class="dim">Media type</span>
+      <span>{{ artifact.media_type }}</span>
+      <span class="dim">Dimensions</span>
+      <span>{{ artifact.width or '—' }} × {{ artifact.height or '—' }}</span>
+      <span class="dim">Bytes</span>
+      <span>{{ artifact.bytes }}</span>
+      <span class="dim">Captured</span>
+      <span>{{ artifact.captured_at or '—' }}</span>
+      <span class="dim">Imported</span>
+      <span>{{ artifact.created_at }}</span>
+    </div>
+    <p class="dim" style="margin-top:10px; word-break:break-all">
+      <strong>SHA-256</strong><br><span class="mono">{{ artifact.sha256 }}</span>
+    </p>
+    <p class="dim" style="word-break:break-all">
+      <strong>Stored at</strong><br><span class="mono">{{ artifact.storage_path }}</span><br>
+      under {{ storage_root }}
+    </p>
+  </section>
+</div>
+
+<section class="card">
+  <h2>Provenance metadata</h2>
+  <pre class="raw">{{ meta_json }}</pre>
+  <p class="dim">
+    Imported manifests keep title, status, perceptual hash and the original
+    line number. Manifest rows are not trusted for target creation; the target
+    link comes from an explicit choice or the scope rules for the source URL.
+  </p>
+</section>
+
+<section class="card">
+  <h2>Delete</h2>
+  <p class="muted">
+    Deleting removes this evidence row. The image bytes are removed only when
+    no other artifact row shares the same content hash.
+  </p>
+  <form method="post" action="/artifacts/{{ artifact.id }}/delete"
+        onsubmit="return confirm('Delete screenshot #{{ artifact.id }}? This cannot be undone.')">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+    <button class="danger sm" type="submit">Delete screenshot</button>
+  </form>
+</section>
+{% endblock %}

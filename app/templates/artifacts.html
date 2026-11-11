@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% block title %}Screenshots · Breadcrumb{% endblock %}
+{% block crumb %}Screenshots{% endblock %}
+
+{% block actions %}
+  <a class="btn ghost sm" href="/api/v1/artifacts/manifest{% if program %}?program_id={{ program.id }}{% endif %}">Export manifest</a>
+{% endblock %}
+
+{% block content %}
+{% if msg %}<div class="warn-box">{{ msg }}</div>{% endif %}
+{% if err %}<div class="warn-box"><strong>Import issue:</strong> {{ err }}</div>{% endif %}
+
+<div class="tiles">
+  <div class="tile"><span class="k">Screenshots</span><span class="v">{{ total }}</span><span class="d">matching this view</span></div>
+  <div class="tile"><span class="k">Program</span><span class="v" style="font-size:1rem">{{ program.name if program else 'All programs' }}</span><span class="d">local evidence only</span></div>
+  <div class="tile"><span class="k">Max image</span><span class="v" style="font-size:1rem">{{ (max_image_bytes / 1048576)|round(0)|int }} MB</span><span class="d">PNG · JPEG · GIF · WebP</span></div>
+  <div class="tile"><span class="k">Storage</span><span class="v" style="font-size:0.8rem; word-break:break-all" class="mono">{{ storage_root }}</span><span class="d">content-addressed, outside SQLite</span></div>
+</div>
+
+<section class="card">
+  <h2>Filter</h2>
+  <form method="get" action="/artifacts" class="row" style="flex-wrap:wrap">
+    <label class="row" style="gap:6px">
+      Program
+      <select name="program_id">
+        <option value="">All programs</option>
+        {% for p in programs %}<option value="{{ p.id }}" {{ 'selected' if program and p.id == program.id else '' }}>{{ p.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="row" style="gap:6px">
+      Target
+      <select name="target_id">
+        <option value="">Any target</option>
+        {% for t in targets %}<option value="{{ t.id }}" {{ 'selected' if selected_target_id == t.id else '' }}>{{ t.name }}</option>{% endfor %}
+      </select>
+    </label>
+    {% if findings %}
+    <label class="row" style="gap:6px">
+      Finding
+      <select name="finding_id">
+        <option value="">Any finding</option>
+        {% for f in findings %}<option value="{{ f.id }}" {{ 'selected' if selected_finding_id == f.id else '' }}>#{{ f.id }} {{ f.title[:48] }}</option>{% endfor %}
+      </select>
+    </label>
+    {% endif %}
+    <input name="source" value="{{ source }}" placeholder="source (eyewitness, gowitness…)" style="width:180px">
+    <input name="q" value="{{ q }}" placeholder="URL, filename or SHA-256" style="flex:1; min-width:180px">
+    <button class="primary sm" type="submit">Apply</button>
+    {% if program or selected_target_id or selected_finding_id or source or q %}
+    <a class="btn ghost sm" href="/artifacts">Reset</a>
+    {% endif %}
+  </form>
+</section>
+
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); align-items:start">
+  <section class="card">
+    <h2>Upload a screenshot</h2>
+    <p class="muted">
+      The bytes are hashed on import and stored once. The browser only reads
+      the file; Breadcrumb never takes screenshots itself and needs no Chromium.
+    </p>
+    <form method="post" action="/artifacts/upload" enctype="multipart/form-data" class="stack">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+      <label>Program
+        <select name="program_id" required>
+          <option value="">Choose a program</option>
+          {% for p in programs %}<option value="{{ p.id }}" {{ 'selected' if program and p.id == program.id else '' }}>{{ p.name }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Image file
+        <input type="file" name="upload" accept="image/png,image/jpeg,image/gif,image/webp" required>
+      </label>
+      <label>Source URL
+        <input name="source_url" placeholder="https://app.example.com/admin" class="mono">
+      </label>
+      <div class="row">
+        <label>Target
+          <select name="target_id">
+            <option value="">(infer from URL)</option>
+            {% for t in targets %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Finding
+          <select name="finding_id">
+            <option value="">(none)</option>
+            {% for f in findings %}<option value="{{ f.id }}">#{{ f.id }} {{ f.title[:40] }}</option>{% endfor %}
+          </select>
+        </label>
+      </div>
+      <input type="hidden" name="source" value="upload">
+      <div><button class="primary" type="submit">Import screenshot</button></div>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Import a manifest</h2>
+    <p class="muted">
+      Point at an EyeWitness or Gowitness JSON/JSONL/CSV report. Relative image
+      paths resolve against the base folder, then a <code>screenshots/</code>
+      child. Missing images are reported row by row; a bad row never aborts the
+      import. No target is created automatically.
+    </p>
+    <form method="post" action="/artifacts/import" class="stack">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+      <label>Program
+        <select name="program_id" required>
+          <option value="">Choose a program</option>
+          {% for p in programs %}<option value="{{ p.id }}" {{ 'selected' if program and p.id == program.id else '' }}>{{ p.name }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Manifest path
+        <input name="manifest_path" required class="mono" placeholder="/home/me/recon/acme/eyewitness/report.json">
+      </label>
+      <label>Image base folder (optional)
+        <input name="base_dir" class="mono" placeholder="/home/me/recon/acme/eyewitness">
+      </label>
+      <div class="row">
+        <label>Target
+          <select name="target_id">
+            <option value="">(infer per URL)</option>
+            {% for t in targets %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Finding
+          <select name="finding_id">
+            <option value="">(none)</option>
+            {% for f in findings %}<option value="{{ f.id }}">#{{ f.id }} {{ f.title[:40] }}</option>{% endfor %}
+          </select>
+        </label>
+      </div>
+      <label>Source label (optional)
+        <input name="source" placeholder="eyewitness, gowitness, manual…">
+      </label>
+      <div><button class="primary" type="submit">Import manifest</button></div>
+    </form>
+  </section>
+</div>
+
+<section class="card">
+  <div class="spread">
+    <h2>Screenshot gallery</h2>
+    <span class="chip">{{ items|length }} shown · {{ total }} total</span>
+  </div>
+  {% if items %}
+  <div class="gallery">
+    {% for item in items %}
+    {% set a = item.artifact %}
+    <a class="shot" href="/artifacts/{{ a.id }}">
+      <img src="/artifacts/{{ a.id }}/content" alt="Screenshot of {{ a.source_url or a.filename }}" loading="lazy">
+      <span class="shot-meta">
+        <strong class="mono">{{ a.source_url or a.filename or ('artifact #' ~ a.id) }}</strong>
+        <span class="dim">
+          {{ a.source }} · {{ a.width }}×{{ a.height }}
+          {% if item.target %} · {{ item.target.name }}{% endif %}
+          {% if item.finding %} · finding #{{ item.finding.id }}{% endif %}
+        </span>
+        <span class="dim mono">{{ a.sha256[:20] }}…</span>
+      </span>
+    </a>
+    {% endfor %}
+  </div>
+  {% if offset or next_offset is not none %}
+  <div class="pager">
+    {% if offset %}<a class="btn ghost sm" href="{{ request.url.include_query_params(offset=[offset - limit, 0]|max) }}">← Previous</a>{% endif %}
+    <span class="dim">Showing {{ offset + 1 }}–{{ offset + items|length }} of {{ total }}</span>
+    {% if next_offset is not none %}<a class="btn ghost sm" href="{{ request.url.include_query_params(offset=next_offset) }}">Next →</a>{% endif %}
+  </div>
+  {% endif %}
+  {% else %}
+  <div class="empty-state">
+    <span class="es-icon">▧</span>
+    <h3>No screenshots yet</h3>
+    <p>Upload an image or import an EyeWitness/Gowitness manifest. The default install has no browser dependency.</p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

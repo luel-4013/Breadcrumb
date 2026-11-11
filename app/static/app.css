@@ -438,6 +438,40 @@ button.danger-solid, .btn.danger-solid { background: var(--danger); border-color
   padding: 10px 14px;
   margin: 10px 0;
 }
+.ok-box {
+  background: rgba(63, 185, 80, .1);
+  border: 1px solid rgba(63, 185, 80, .4);
+  border-left: 3px solid var(--ok);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  margin: 10px 0;
+}
+
+/* ---------- evidence screenshots ---------- */
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+}
+.shot {
+  display: flex; flex-direction: column; min-width: 0;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); overflow: hidden; color: var(--text);
+  transition: border-color .12s, transform .12s;
+}
+.shot:hover { border-color: var(--accent); text-decoration: none; transform: translateY(-1px); }
+.shot img {
+  display: block; width: 100%; height: 150px; object-fit: cover;
+  background: var(--elev); border-bottom: 1px solid var(--border);
+}
+.shot-meta { display: flex; flex-direction: column; gap: 3px; padding: 9px 10px; min-width: 0; }
+.shot-meta strong { font-size: .8rem; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shot-meta .dim { font-size: .74rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artifact-full {
+  display: block; max-width: 100%; height: auto; margin: 0 auto;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--elev);
+}
 
 /* ---------- analyst metadata: verdicts, tags, notes ---------- */
 .badge.v-confirmed { background: rgba(35, 160, 90, .16); color: var(--ok); border-color: rgba(35, 160, 90, .4); }

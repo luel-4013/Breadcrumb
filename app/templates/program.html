@@ -21,6 +21,7 @@
   <div class="tile"><span class="k">Relationships</span><span class="v">{{ relationships|length }}</span><span class="d">derived + manual</span></div>
   <div class="tile"><span class="k">In scope</span><span class="v ok">{{ scope_counts.in }}</span><span class="d">{{ scope_counts.out }} out · {{ scope_counts.unknown }} unknown</span></div>
   <div class="tile"><span class="k">Findings</span><span class="v {{ 'warn' if findings else '' }}">{{ findings|length }}</span><span class="d">{{ unattributed|length }} unattributed</span></div>
+  <div class="tile"><span class="k">Screenshots</span><span class="v">{{ screenshot_total }}</span><span class="d">hashed evidence images</span></div>
 </div>
 
 <div data-tabs>
@@ -99,6 +100,30 @@
         <button class="btn sm" type="submit">Rebuild history snapshots</button>
         <span class="dim">Snapshots are rebuildable from the sealed evidence chain.</span>
       </form>
+    </section>
+
+    <section class="card">
+      <div class="spread">
+        <h2>Screenshots <span class="count">{{ screenshot_total }}</span></h2>
+        <a class="btn ghost sm" href="/artifacts?program_id={{ program.id }}">All screenshots →</a>
+      </div>
+      {% if screenshots %}
+      <div class="gallery">
+        {% for a in screenshots %}
+        <a class="shot" href="/artifacts/{{ a.id }}">
+          <img src="/artifacts/{{ a.id }}/content" alt="Screenshot of {{ a.source_url or a.filename }}" loading="lazy">
+          <span class="shot-meta">
+            <strong class="mono">{{ a.source_url or a.filename or ('artifact #' ~ a.id) }}</strong>
+            <span class="dim">{{ a.source }} · {{ a.width }}×{{ a.height }}{% if a.finding_id %} · finding #{{ a.finding_id }}{% endif %}</span>
+            <span class="dim mono">{{ a.sha256[:20] }}…</span>
+          </span>
+        </a>
+        {% endfor %}
+      </div>
+      <p class="dim" style="margin-top:8px">Screenshots are stored outside SQLite and verified by SHA-256. Import EyeWitness/Gowitness manifests from the Screenshots page.</p>
+      {% else %}
+      <p class="empty">No screenshots yet. <a href="/artifacts?program_id={{ program.id }}">Import an EyeWitness or Gowitness manifest →</a></p>
+      {% endif %}
     </section>
 
     <div class="grid">

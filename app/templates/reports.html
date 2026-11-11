@@ -144,6 +144,8 @@
   <p class="dim">
     A read-only zip with HTML, Markdown, JSON, a manifest, checksums and redacted
     capture manifests. No account or server is needed to review it.
+    Screenshots are included only when the <strong>Include screenshots</strong>
+    option is checked, and their pixels are never redacted.
   </p>
   <form method="post" action="/reports/{{ program.id }}/bundle" class="stack">
     <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">

@@ -1361,6 +1361,7 @@ def cmd_bundle(args) -> int:
                 _template_values(args),
                 comments=comments,
                 include_pdf=args.include_pdf,
+                include_screenshots=args.include_screenshots,
             )
         except report_templates.TemplateError as exc:
             print("bundle: " + "; ".join(exc.errors), file=sys.stderr)
@@ -1597,6 +1598,187 @@ def cmd_schedule(args) -> int:
     return 2
 
 
+def cmd_artifacts(args) -> int:
+    """Manage hashed screenshot evidence (list/import/show/export/delete)."""
+    from . import artifacts as artifacts_mod
+    from .models import EvidenceArtifact
+
+    init_db()
+    action = args.action
+    with Session(engine) as session:
+        if action == "list":
+            result = artifacts_mod.list_artifacts(
+                session,
+                program_id=args.program,
+                target_id=args.target,
+                finding_id=args.finding,
+                entity_id=args.entity,
+                source=args.source,
+                q=args.q,
+                limit=args.limit,
+                offset=args.offset,
+            )
+            if args.json:
+                print(
+                    json.dumps(
+                        {
+                            "total": result["total"],
+                            "count": result["count"],
+                            "limit": result["limit"],
+                            "offset": result["offset"],
+                            "next_offset": result["next_offset"],
+                            "artifacts": [
+                                artifacts_mod.artifact_dict(row)
+                                for row in result["artifacts"]
+                            ],
+                        },
+                        indent=2,
+                        default=str,
+                    )
+                )
+                return 0
+            if not result["artifacts"]:
+                print("no screenshots")
+                return 0
+            print(
+                f"{'id':>5}  {'program':>7}  {'source':<12}  "
+                f"{'size':>9}  {'pixels':>11}  url"
+            )
+            for row in result["artifacts"]:
+                pixels = (
+                    f"{row.width}x{row.height}"
+                    if row.width and row.height
+                    else "—"
+                )
+                print(
+                    f"{row.id:>5}  {(row.program_id or '—'):>7}  "
+                    f"{row.source[:12]:<12}  {row.bytes:>9}  {pixels:>11}  "
+                    f"{row.source_url or row.filename or ''}"
+                )
+            print(
+                f"{result['count']} of {result['total']} screenshot(s); "
+                f"storage {artifacts_mod.default_artifact_root()}"
+            )
+            return 0
+
+        if action == "manifest":
+            data = artifacts_mod.artifact_manifest(
+                session,
+                program_id=args.program,
+                include_meta=not args.no_meta,
+                limit=args.limit,
+            )
+            text = json.dumps(data, indent=2, sort_keys=True, default=str) + "\n"
+            if args.output:
+                path = Path(args.output).expanduser()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text, encoding="utf-8")
+                print(f"wrote {path} ({data['count']} artifact(s))")
+            else:
+                sys.stdout.write(text)
+            return 0
+
+        if action == "import":
+            try:
+                result = artifacts_mod.import_manifest(
+                    session,
+                    args.manifest,
+                    program_id=args.program,
+                    base_dir=args.base_dir or None,
+                    target_id=args.target,
+                    finding_id=args.finding,
+                    source=args.source,
+                )
+            except artifacts_mod.ArtifactError as exc:
+                print(f"artifacts import: {exc}", file=sys.stderr)
+                return 2
+            if args.json:
+                print(json.dumps(result, indent=2, default=str))
+            else:
+                print(
+                    f"manifest {result['format']} from {result['source']}: "
+                    f"{result['imported']} imported, "
+                    f"{result['duplicates']} duplicate(s), "
+                    f"{result['skipped']} skipped, {result['rows']} row(s)"
+                )
+                if result.get("truncated"):
+                    print("  stopped at the per-import limit", file=sys.stderr)
+                for error in result.get("errors") or []:
+                    print(
+                        f"  line {error.get('line')}: {error.get('error')}",
+                        file=sys.stderr,
+                    )
+            return 0
+
+        artifact = (
+            session.get(EvidenceArtifact, args.artifact_id)
+            if getattr(args, "artifact_id", None)
+            else None
+        )
+        if artifact is None:
+            print(f"artifacts: #{args.artifact_id} not found", file=sys.stderr)
+            return 1
+
+        if action == "show":
+            payload = artifacts_mod.artifact_dict(artifact)
+            payload["storage_path"] = artifact.storage_path
+            payload["storage_root"] = str(artifacts_mod.default_artifact_root())
+            payload["verification"] = artifacts_mod.verify_artifact(artifact)
+            if args.json:
+                print(json.dumps(payload, indent=2, default=str))
+                return 0
+            print(f"screenshot #{artifact.id}")
+            print(f"  program:   {artifact.program_id or '—'}")
+            print(f"  target:    {artifact.target_id or '—'}")
+            print(f"  finding:   {artifact.finding_id or '—'}")
+            print(f"  source:    {artifact.source}")
+            print(f"  url:       {artifact.source_url or '—'}")
+            print(f"  file:      {artifact.filename or '—'}")
+            print(f"  type:      {artifact.media_type} {artifact.width}x{artifact.height}")
+            print(f"  bytes:     {artifact.bytes}")
+            print(f"  sha256:    {artifact.sha256}")
+            print(f"  stored:    {artifact.storage_path}")
+            print(f"  captured:  {artifact.captured_at or '—'}")
+            check = payload["verification"]
+            print(
+                "  verify:    "
+                + (
+                    "hash and size OK"
+                    if check.get("hash_ok") and check.get("size_ok") and check.get("exists")
+                    else check.get("error") or "FAILED"
+                )
+            )
+            return 0
+
+        if action == "export":
+            try:
+                path = artifacts_mod.export_artifact(artifact, args.output)
+            except (OSError, artifacts_mod.ArtifactError) as exc:
+                print(f"artifacts export: {exc}", file=sys.stderr)
+                return 1
+            print(f"wrote {path} ({artifact.sha256})")
+            return 0
+
+        if action == "delete":
+            if not args.yes:
+                print(
+                    f"artifacts: refusing to delete #{artifact.id} without --yes",
+                    file=sys.stderr,
+                )
+                return 2
+            result = artifacts_mod.delete_artifact(session, artifact)
+            print(
+                f"deleted screenshot #{result['id']}"
+                + (
+                    "; bytes removed"
+                    if result["bytes_removed"]
+                    else f"; {result['remaining_rows']} row(s) still reference the bytes"
+                )
+            )
+            return 0
+    return 2
+
+
 def cmd_scheduler(args) -> int:
     """Run due schedules. One process, local only; no daemon is installed."""
     from . import schedules as schedules_mod
@@ -1743,6 +1925,44 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_parsers)
 
+    p = sub.add_parser("artifacts", help="manage hashed screenshot evidence")
+    artifact_sub = p.add_subparsers(dest="action", required=True)
+    listing = artifact_sub.add_parser("list", help="list screenshots")
+    listing.add_argument("--program", type=int, default=None)
+    listing.add_argument("--target", type=int, default=None)
+    listing.add_argument("--finding", type=int, default=None)
+    listing.add_argument("--entity", type=int, default=None)
+    listing.add_argument("--source", default="")
+    listing.add_argument("--q", default="", help="URL, filename or SHA-256 search")
+    listing.add_argument("--limit", type=int, default=60)
+    listing.add_argument("--offset", type=int, default=0)
+    listing.add_argument("--json", action="store_true")
+    importer = artifact_sub.add_parser(
+        "import", help="import an EyeWitness/Gowitness JSON/JSONL/CSV manifest"
+    )
+    importer.add_argument("manifest")
+    importer.add_argument("--program", type=int, required=True)
+    importer.add_argument("--base-dir", default="", help="folder holding relative images")
+    importer.add_argument("--target", type=int, default=None)
+    importer.add_argument("--finding", type=int, default=None)
+    importer.add_argument("--source", default="", help="override the detected source label")
+    importer.add_argument("--json", action="store_true")
+    show = artifact_sub.add_parser("show", help="show one screenshot and verify its hash")
+    show.add_argument("artifact_id", type=int)
+    show.add_argument("--json", action="store_true")
+    export = artifact_sub.add_parser("export", help="copy verified image bytes to a path")
+    export.add_argument("artifact_id", type=int)
+    export.add_argument("-o", "--output", required=True)
+    delete = artifact_sub.add_parser("delete", help="delete one screenshot row")
+    delete.add_argument("artifact_id", type=int)
+    delete.add_argument("--yes", action="store_true", help="confirm deletion")
+    manifest = artifact_sub.add_parser("manifest", help="export artifact metadata JSON")
+    manifest.add_argument("--program", type=int, default=None)
+    manifest.add_argument("--limit", type=int, default=10000)
+    manifest.add_argument("--no-meta", action="store_true")
+    manifest.add_argument("-o", "--output", default="")
+    p.set_defaults(func=cmd_artifacts)
+
     p = sub.add_parser("worker", help="run the native/adapter worker")
     p.add_argument("--once", action="store_true", help="claim at most one job and exit")
     p.add_argument("--poll", type=float, default=2.0, help="idle poll interval (seconds)")
@@ -1840,6 +2060,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="file containing reviewer comments (redacted before inclusion)",
     )
     p.add_argument("--include-pdf", action="store_true")
+    p.add_argument(
+        "--include-screenshots",
+        action="store_true",
+        help="include imported screenshots byte-for-byte (pixels are not redacted)",
+    )
     p.set_defaults(func=cmd_bundle)
 
     p = sub.add_parser("verify-bundle", help="verify an offline review bundle zip")

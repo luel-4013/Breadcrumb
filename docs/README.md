@@ -1,9 +1,10 @@
 # Breadcrumb + Leadline planning documents
 
-Status: **Phase D of the flagship plan is implemented and released as `0.8.0`
-(2026-11-11). Phase C is `0.7.0`, Phase B is `0.6.0` (2026-11-10), Phase A is
-`0.5.0` (2026-11-09), and Phases 0–8 are implemented and released as `0.4.0`
-(2026-11-08). The `v0.4.0` tag remains intact; 0.5.0–0.8.0 are additive.**
+Status: **Phase E of the flagship plan is implemented and released as `0.9.0`
+(2026-11-11). Phase D is `0.8.0`, Phase C is `0.7.0`, Phase B is `0.6.0`
+(2026-11-10), Phase A is `0.5.0` (2026-11-09), and Phases 0–8 are implemented
+and released as `0.4.0` (2026-11-08). The `v0.4.0` tag remains intact;
+0.5.0–0.9.0 are additive.**
 Included: durable job queue/worker, scope guard, encrypted-at-rest
 header-profile secrets, the twelve-phase `leadline-recon` preset (DNS, host
 intel, ports/TLS, HTTP, tech, JS, params, headers, API, vuln candidates, CVE
@@ -27,7 +28,10 @@ templates, default-on redaction, a verifiable offline review bundle, and
 HackerOne/DefectDojo/Ghostwriter/Dradis/SARIF exports. Phase D (0.8.0)
 implements the automation slice: local folder schedules with run history,
 a local parser SDK, idempotent/bulk/paginated API automation, and recorded
-100k-import/1M-read benchmarks.
+100k-import/1M-read benchmarks. Phase E (0.9.0) implements the capture slice:
+EyeWitness/Gowitness screenshot manifests, content-addressed artifact storage,
+explicit screenshot reports/bundles, and adapter diagnostics. No browser is
+embedded. Phase F (1.0.0) is the hardening/release gate.
 Date: 2026-10-27 to 2026-11-08
 Repos inspected:
 
@@ -50,8 +54,8 @@ no code. The implementation is additive and is released as `0.4.0`.
 | Legacy schema backfill | Implemented | `chain_seq`, `capture_key`, `evidencechain` migration test |
 
 Test baseline after Phase 0: **72 passed, 1 warning** (historical).
-Current suite after the native-executor, secrets, Phases 4–8 and Phases A–D:
-**249 passed, 1 warning** (2026-11-11).
+Current suite after the native-executor, secrets, Phases 4–8 and Phases A–E:
+**267 passed, 1 warning** (2026-11-11).
 
 ## Native-executor vertical slice (2026-11-06)
 

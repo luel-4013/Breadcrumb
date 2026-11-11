@@ -11,6 +11,7 @@ paragraph text as XML-like markup.
 
 from __future__ import annotations
 
+import base64
 import re
 from datetime import datetime, timezone
 from io import BytesIO
@@ -23,6 +24,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import (
     HRFlowable,
+    Image,
     KeepTogether,
     PageBreak,
     Paragraph,
@@ -789,6 +791,90 @@ def generate_report_pdf(
     return buffer.getvalue()
 
 
+def _screenshot_flowables(context: dict, styles) -> list[Any]:
+    """Embed report screenshots in the PDF when explicitly requested.
+
+    Reportlab can decode PNG and JPEG directly. GIF/WebP images stay as a
+    metadata caption rather than adding an image-conversion dependency to the
+    default install. Hostile filenames and URLs are escaped like any other
+    report text.
+    """
+    screenshot_context = context.get("screenshots") or {}
+    items = screenshot_context.get("items") or []
+    variables = context.get("variables") or {}
+    if not variables.get("include_screenshots") or not items:
+        return []
+    blocks: list[Any] = [
+        Paragraph(
+            f"Screenshots ({screenshot_context.get('total', len(items))})",
+            styles["SectionHeading"],
+        ),
+        Paragraph(
+            "Screenshots are included as captured. Redaction masks text fields, "
+            "not pixels; review every image before sharing.",
+            styles["Meta"],
+        ),
+        Spacer(1, 5),
+    ]
+    for index, item in enumerate(items, start=1):
+        media_type = str(item.get("media_type") or "")
+        data_uri = str(item.get("data_uri") or "")
+        caption = (
+            f"Screenshot {index}: "
+            f"{item.get('source_url') or item.get('filename') or 'target'}"
+        )
+        caption_bits = [caption]
+        if item.get("target"):
+            caption_bits.append(str(item["target"]))
+        if item.get("width") and item.get("height"):
+            caption_bits.append(f"{item['width']} x {item['height']}")
+        if media_type not in ("image/png", "image/jpeg"):
+            caption_bits.append(f"{media_type or 'image'} not embedded in PDF")
+            blocks.append(Paragraph(_escape(" · ".join(caption_bits), 700), styles["Meta"]))
+            blocks.append(Spacer(1, 5))
+            continue
+        try:
+            encoded = data_uri.split(",", 1)[1] if "," in data_uri else ""
+            data = base64.b64decode(encoded, validate=True)
+            width = float(item.get("width") or 0)
+            height = float(item.get("height") or 0)
+            if width <= 0 or height <= 0:
+                raise ValueError("missing dimensions")
+            scale = min((6.9 * inch) / width, (3.4 * inch) / height, 1.0)
+            image = Image(BytesIO(data), width=width * scale, height=height * scale)
+            image.hAlign = "LEFT"
+            blocks.append(
+                KeepTogether(
+                    [
+                        image,
+                        Spacer(1, 3),
+                        Paragraph(
+                            _escape(
+                                " · ".join(caption_bits)
+                                + f" · SHA-256 {item.get('sha256') or ''}",
+                                900,
+                            ),
+                            styles["Meta"],
+                        ),
+                        Spacer(1, 8),
+                    ]
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - one bad image never kills the PDF
+            blocks.append(
+                Paragraph(
+                    _escape(
+                        " · ".join(caption_bits)
+                        + f" · image unavailable ({type(exc).__name__})",
+                        700,
+                    ),
+                    styles["Meta"],
+                )
+            )
+            blocks.append(Spacer(1, 5))
+    return blocks
+
+
 def generate_document_pdf(context: dict) -> bytes:
     """Render a report-template context to PDF.
 
@@ -1134,6 +1220,8 @@ def generate_document_pdf(context: dict) -> bytes:
         story.append(Spacer(1, 8))
         story.append(HRFlowable(width="100%", color=colors.HexColor("#e5e7eb")))
         story.append(Spacer(1, 5))
+
+    story.extend(_screenshot_flowables(context, styles))
 
     if context.get("recommendations"):
         story.append(Paragraph("Recommendations", styles["SectionHeading"]))

@@ -418,3 +418,44 @@ class ScheduleRun(SQLModel, table=True):
     findings: int = 0
     error: Optional[str] = Field(default=None, sa_column=Column(Text))
     detail: dict = Field(default_factory=dict, sa_column=Column(JSON))
+
+
+class EvidenceArtifact(SQLModel, table=True):
+    """A hashed evidence artifact, currently a screenshot (Phase E).
+
+    The bytes live in a content-addressed directory, never in SQLite: a
+    1,000-screenshot notebook would otherwise bloat every backup and query.
+    ``sha256`` is the hash of the stored bytes; it is never recomputed or
+    rewritten. ``storage_path`` is relative to the artifact root so the
+    database is portable.
+
+    Artifacts link to a program and, when known, a target, capture, entity or
+    finding. Links are optional because EyeWitness/Gowitness manifests often
+    contain only a URL and a filename; the target is inferred from the URL.
+    """
+
+    __tablename__ = "evidenceartifact"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    program_id: Optional[int] = Field(
+        default=None, foreign_key="program.id", index=True
+    )
+    target_id: Optional[int] = Field(
+        default=None, foreign_key="target.id", index=True
+    )
+    paste_id: Optional[int] = Field(default=None, foreign_key="paste.id", index=True)
+    entity_id: Optional[int] = Field(default=None, index=True)
+    finding_id: Optional[int] = Field(default=None, index=True)
+    kind: str = Field(default="screenshot", index=True)
+    source: str = Field(default="manual", index=True)
+    source_url: str = Field(default="", sa_column=Column(Text))
+    filename: str = ""
+    media_type: str = ""
+    sha256: str = Field(index=True)
+    bytes: int = 0
+    width: Optional[int] = None
+    height: Optional[int] = None
+    storage_path: str = Field(default="", sa_column=Column(Text))
+    captured_at: Optional[datetime] = None
+    meta: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=_utcnow)

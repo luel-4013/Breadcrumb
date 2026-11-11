@@ -63,7 +63,7 @@ PORT    STATE SERVICE
 def test_schema_has_schedules_and_runs():
     from app.db import SCHEMA_VERSION
 
-    assert SCHEMA_VERSION == 7
+    assert SCHEMA_VERSION >= 7
     with Session(engine) as session:
         assert session.exec(select(Schedule)).all() is not None
         assert session.exec(select(ScheduleRun)).all() is not None

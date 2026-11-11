@@ -14,7 +14,7 @@ DB_PATH = Path(
 # Bump when a migration changes the on-disk contract. The value is recorded in
 # appstate so backups/restores and future migrations can be versioned
 # explicitly instead of inferred from column presence.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 engine = create_engine(
     f"sqlite:///{DB_PATH}",
@@ -158,6 +158,26 @@ MIGRATIONS = {
         "error": "TEXT",
         "detail": "TEXT DEFAULT '{}'",
     },
+    "evidenceartifact": {
+        "program_id": "INTEGER",
+        "target_id": "INTEGER",
+        "paste_id": "INTEGER",
+        "entity_id": "INTEGER",
+        "finding_id": "INTEGER",
+        "kind": "TEXT DEFAULT 'screenshot'",
+        "source": "TEXT DEFAULT 'manual'",
+        "source_url": "TEXT DEFAULT ''",
+        "filename": "TEXT DEFAULT ''",
+        "media_type": "TEXT DEFAULT ''",
+        "sha256": "TEXT DEFAULT ''",
+        "bytes": "INTEGER DEFAULT 0",
+        "width": "INTEGER",
+        "height": "INTEGER",
+        "storage_path": "TEXT DEFAULT ''",
+        "captured_at": "DATETIME",
+        "meta": "TEXT DEFAULT '{}'",
+        "created_at": "DATETIME",
+    },
 }
 
 # Indexes for the queries the UI/API run on every page. Created idempotently
@@ -194,6 +214,11 @@ INDEXES = [
     ("ix_schedule_program", "schedule (program_id)"),
     ("ix_schedulerun_schedule", "schedulerun (schedule_id, id)"),
     ("ix_schedulerun_status", "schedulerun (status)"),
+    ("ix_artifact_program", "evidenceartifact (program_id, id)"),
+    ("ix_artifact_target", "evidenceartifact (target_id, id)"),
+    ("ix_artifact_paste", "evidenceartifact (paste_id)"),
+    ("ix_artifact_source", "evidenceartifact (source, id)"),
+    ("ix_artifact_sha", "evidenceartifact (sha256)"),
 ]
 
 # A linear hash chain means each capture has at most one successor. These

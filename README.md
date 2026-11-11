@@ -152,6 +152,13 @@ From the demo program to a downloadable HackerOne Markdown file:
   Markdown, JSON, optional PDF, a SHA-256 manifest, per-capture redacted
   evidence manifests, optional comments, and an in-memory verifier that rejects
   tampering, traversal, symlinks and missing files. No login or server needed.
+- **Screenshot evidence (Phase E)**: import EyeWitness/Gowitness manifests or
+  manual PNG/JPEG/GIF/WebP uploads. Images are hashed, content-addressed and
+  stored outside SQLite; metadata links to programs, targets, captures, entities
+  and findings. There is no Chromium/Selenium dependency. Reports and bundles
+  include screenshots only when explicitly requested, and say clearly that
+  pixels are not redacted. See
+  [docs/SCREENSHOT_COOKBOOK.md](docs/SCREENSHOT_COOKBOOK.md).
 - **Integration exports**: HackerOne Markdown, DefectDojo Generic Findings
   Import JSON, Ghostwriter bridge JSON, Dradis note Markdown, **SARIF** (CI /
   GitHub code scanning), CSV, full JSON, and `targets.txt` (pipe straight into
@@ -364,6 +371,45 @@ See [docs/REPORT_COOKBOOK.md](docs/REPORT_COOKBOOK.md),
 [docs/REDACTION_GUIDE.md](docs/REDACTION_GUIDE.md) and
 [docs/INTEGRATION_MAPPINGS.md](docs/INTEGRATION_MAPPINGS.md).
 
+## Screenshots and evidence artifacts
+
+Breadcrumb does not take screenshots itself. It imports images produced by tools
+you already run, links them to the evidence they support, and keeps the bytes
+outside SQLite.
+
+```bash
+# EyeWitness CSV/JSON or Gowitness JSON/JSONL
+python -m app.cli artifacts import ~/recon/acme/eyewitness/report.csv \
+  --program 1 --base-dir ~/recon/acme/eyewitness
+
+# Attach the import to a finding, then browse and verify
+python -m app.cli artifacts import ~/recon/acme/gowitness/report.jsonl \
+  --program 1 --finding 42
+python -m app.cli artifacts list --program 1
+python -m app.cli artifacts show 7 --json
+python -m app.cli artifacts export 7 -o evidence/admin.png
+python -m app.cli artifacts manifest --program 1 -o artifacts.json
+
+# Reports and review bundles opt in explicitly
+python -m app.cli render 1 --template technical --var include_screenshots=1 \
+  --format html -o finding.html
+python -m app.cli bundle 1 --template technical --include-screenshots \
+  -o review.zip
+```
+
+Default root: `<database-name>.artifacts` beside the SQLite file, or
+`BREADCRUMB_ARTIFACT_DIR`. PNG/JPEG/GIF/WebP only; SVG and PDF are rejected
+because an evidence image is served to a browser. Caps: 12 MiB/image, 2,000
+manifest rows, 1,000 images/import. Every read verifies SHA-256 before serving.
+Manifests never create targets; the target is explicit or inferred from the
+source URL and existing scope rules.
+
+Screenshots are included in reports and bundles **only when requested**. HTML
+and PDF embed the image, JSON keeps metadata without base64 bytes, and Markdown
+lists source/dimensions/hash. Redaction masks text fields, not pixels: review
+every image before sharing. See
+[docs/SCREENSHOT_COOKBOOK.md](docs/SCREENSHOT_COOKBOOK.md).
+
 ## Automation: schedules and local parsers
 
 **Scheduled re-import** watches one local folder and imports new files through
@@ -426,6 +472,12 @@ python -m app.cli schedule list                    # run history lives on show
 python -m app.cli schedule run acme --json
 python -m app.cli scheduler --once                 # cron-friendly due check
 python -m app.cli parsers --json                   # built-in + local plugins
+python -m app.cli artifacts list --program 1       # hashed screenshot evidence
+python -m app.cli artifacts import report.json --program 1 --base-dir ~/recon
+python -m app.cli artifacts show 7 --json          # hash verification included
+python -m app.cli artifacts export 7 -o shot.png
+python -m app.cli artifacts manifest --program 1 -o artifacts.json
+python -m app.cli artifacts delete 7 --yes
 python -m app.cli backup -o nightly.db
 python -m app.cli worker --poll 2 --lease 120      # durable native/adapter worker
 python -m app.cli collect example.com --program 1 --collector leadline-recon
@@ -439,6 +491,7 @@ python -m app.cli report-templates                  # list built-in report templ
 python -m app.cli render 1 --template hackerone --format md -o report.md
 python -m app.cli render 1 --template technical --format pdf -o report.pdf
 python -m app.cli bundle 1 --template technical --include-pdf -o review.zip
+python -m app.cli bundle 1 --template technical --include-screenshots -o review.zip
 python -m app.cli verify-bundle review.zip          # offline, in-memory check
 python -m app.cli report 1 --format pdf -o report.pdf
 python -m app.cli import-leadline --db /path/to/leadline.db --dry-run
@@ -462,6 +515,16 @@ curl -X POST /api/v1/schedules -H 'Content-Type: application/json' \
   -d '{"name":"acme","source":"/home/me/recon/acme/drop","program_id":1,"interval_seconds":3600}'
 curl -X POST /api/v1/schedules/1/run
 curl /api/v1/parsers                    # built-in + local plugin catalog
+
+# screenshot evidence (metadata in SQLite, hashed bytes outside it)
+curl -X POST /api/v1/artifacts \
+  -F program_id=1 -F finding_id=42 -F source_url='https://app.example.com/' \
+  -F upload=@screenshot.png
+curl '/api/v1/artifacts?program_id=1&limit=50'
+curl '/api/v1/artifacts/7'              # includes live hash verification
+curl '/api/v1/artifacts/7/content' -o screenshot.png
+curl '/api/v1/artifacts/manifest?program_id=1'
+curl '/api/v1/tools'                    # adapter install/version/scope diagnostics
 
 # import trust + evidence
 curl '/api/v1/pastes/1/report'          # completeness, skipped rows, issues, hint
@@ -533,8 +596,9 @@ reverse proxy.
   HackerOne/DefectDojo/Ghostwriter/Dradis/SARIF exports. Implemented.
 - **0.8.0 — Automate:** scheduled re-import, local parser SDK, stable API
   pagination, 1M-entity performance. Implemented.
-- **0.9.0 — Capture:** optional screenshot import and adapter hardening. Next.
-- **1.0.0 — Flagship:** security/migration/rollback/soak gates and docs.
+- **0.9.0 — Capture:** EyeWitness/Gowitness screenshot import, hashed artifact
+  storage, explicit screenshot reports/bundles, adapter diagnostics. Implemented.
+- **1.0.0 — Flagship:** security/migration/rollback/soak gates and docs. Next.
 
 See [docs/IMPORT_COOKBOOK.md](docs/IMPORT_COOKBOOK.md),
 [docs/MANIFEST_AND_DOCTOR.md](docs/MANIFEST_AND_DOCTOR.md),
@@ -545,7 +609,9 @@ See [docs/IMPORT_COOKBOOK.md](docs/IMPORT_COOKBOOK.md),
 [docs/REDACTION_GUIDE.md](docs/REDACTION_GUIDE.md),
 [docs/INTEGRATION_MAPPINGS.md](docs/INTEGRATION_MAPPINGS.md),
 [docs/AUTOMATION_COOKBOOK.md](docs/AUTOMATION_COOKBOOK.md),
-[docs/PARSER_AUTHORING.md](docs/PARSER_AUTHORING.md) and
+[docs/PARSER_AUTHORING.md](docs/PARSER_AUTHORING.md),
+[docs/SCREENSHOT_COOKBOOK.md](docs/SCREENSHOT_COOKBOOK.md),
+[docs/ADAPTER_SAFETY.md](docs/ADAPTER_SAFETY.md) and
 [docs/PERFORMANCE_TUNING.md](docs/PERFORMANCE_TUNING.md).
 
 ## Contributing

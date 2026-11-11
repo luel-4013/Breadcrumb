@@ -17,6 +17,7 @@ from urllib.parse import quote, urlencode, urlparse
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import (
+    FileResponse,
     HTMLResponse,
     JSONResponse,
     PlainTextResponse,
@@ -33,6 +34,7 @@ from sqlmodel import Session, func, select
 from . import (
     __version__,
     ai,
+    artifacts as artifacts_mod,
     diff as diff_mod,
     graph,
     headers_gen,
@@ -73,6 +75,7 @@ from .jobs import run_once as run_native_job
 from .models import (
     CustomRunner,
     Entity,
+    EvidenceArtifact,
     EvidenceChain,
     Finding,
     HeaderProfile,
@@ -447,6 +450,9 @@ def program_view(program_id: int, request: Request, session: Session = Depends(g
     }
     unattributed = [e for e in entities if e.target_id is None]
     triage_states = {finding.id: triage.triage_status(finding) for finding in findings}
+    recent_screenshots = artifacts_mod.list_artifacts(
+        session, program_id=program_id, limit=8
+    )
     scope_reasons: dict[str, int] = {}
     for entity in entities:
         key = entity.scope_reason or "unknown"
@@ -463,6 +469,8 @@ def program_view(program_id: int, request: Request, session: Session = Depends(g
             relationships=relationships,
             findings=findings,
             triage_states=triage_states,
+            screenshots=recent_screenshots["artifacts"],
+            screenshot_total=recent_screenshots["total"],
             scope_counts=scope_counts,
             scope_reasons=scope_reasons,
             rule_severities_text=format_severity_overrides(program.rule_severities),
@@ -1707,6 +1715,409 @@ def parsers_view(request: Request):
     )
 
 
+def _artifact_gallery_items(session: Session, rows) -> list[dict]:
+    items = []
+    for artifact in rows:
+        items.append(
+            {
+                "artifact": artifact,
+                "target": session.get(Target, artifact.target_id)
+                if artifact.target_id
+                else None,
+                "finding": session.get(Finding, artifact.finding_id)
+                if artifact.finding_id
+                else None,
+            }
+        )
+    return items
+
+
+@app.get("/artifacts", response_class=HTMLResponse)
+def artifacts_view(
+    request: Request,
+    program_id: int | None = None,
+    target_id: int | None = None,
+    finding_id: int | None = None,
+    source: str = "",
+    q: str = "",
+    limit: int = 60,
+    offset: int = 0,
+    msg: str = "",
+    err: str = "",
+    session: Session = Depends(get_session),
+):
+    program = session.get(Program, program_id) if program_id else None
+    if program_id and program is None:
+        raise HTTPException(status_code=404, detail="Program not found")
+    result = artifacts_mod.list_artifacts(
+        session,
+        program_id=program.id if program else None,
+        target_id=target_id,
+        finding_id=finding_id,
+        source=source,
+        q=q,
+        limit=limit,
+        offset=offset,
+    )
+    findings = (
+        session.exec(
+            select(Finding)
+            .where(Finding.program_id == program.id)
+            .order_by(Finding.id.desc())
+            .limit(500)
+        ).all()
+        if program
+        else []
+    )
+    return templates.TemplateResponse(
+        request,
+        "artifacts.html",
+        _ctx(
+            programs=_programs(session),
+            program=program,
+            targets=_targets(session, program.id if program else None),
+            findings=findings,
+            items=_artifact_gallery_items(session, result["artifacts"]),
+            total=result["total"],
+            limit=result["limit"],
+            offset=result["offset"],
+            next_offset=result["next_offset"],
+            selected_target_id=target_id,
+            selected_finding_id=finding_id,
+            source=source,
+            q=q,
+            storage_root=str(artifacts_mod.default_artifact_root()),
+            max_image_bytes=artifacts_mod.MAX_IMAGE_BYTES,
+            msg=msg,
+            err=err,
+        ),
+    )
+
+
+@app.post("/artifacts/upload")
+def artifact_upload(
+    upload: UploadFile = File(...),
+    program_id: str = Form(""),
+    target_id: str = Form(""),
+    finding_id: str = Form(""),
+    source_url: str = Form(""),
+    source: str = Form("upload"),
+    session: Session = Depends(get_session),
+):
+    pid = _api_optional_int(program_id, "program_id")
+    if pid is None:
+        raise HTTPException(status_code=400, detail="a program is required")
+    raw = upload.file.read(artifacts_mod.MAX_IMAGE_BYTES + 1)
+    if len(raw) > artifacts_mod.MAX_IMAGE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                "Image too large (max "
+                f"{artifacts_mod.MAX_IMAGE_BYTES // (1024 * 1024)} MB)"
+            ),
+        )
+    try:
+        artifact, duplicate = artifacts_mod.import_image(
+            session,
+            raw,
+            program_id=pid,
+            filename=upload.filename or "upload",
+            source=source or "upload",
+            source_url=source_url,
+            target_id=_api_optional_int(target_id, "target_id"),
+            finding_id=_api_optional_int(finding_id, "finding_id"),
+        )
+    except artifacts_mod.ArtifactError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    msg = "duplicate screenshot" if duplicate else "screenshot imported"
+    return RedirectResponse(
+        f"/artifacts/{artifact.id}?msg={quote(msg)}", status_code=303
+    )
+
+
+@app.post("/artifacts/import")
+def artifact_import(
+    manifest_path: str = Form(...),
+    base_dir: str = Form(""),
+    program_id: str = Form(""),
+    target_id: str = Form(""),
+    finding_id: str = Form(""),
+    source: str = Form(""),
+    session: Session = Depends(get_session),
+):
+    pid = _api_optional_int(program_id, "program_id")
+    if pid is None:
+        raise HTTPException(status_code=400, detail="a program is required")
+    try:
+        result = artifacts_mod.import_manifest(
+            session,
+            manifest_path,
+            program_id=pid,
+            base_dir=base_dir.strip() or None,
+            target_id=_api_optional_int(target_id, "target_id"),
+            finding_id=_api_optional_int(finding_id, "finding_id"),
+            source=source,
+        )
+    except artifacts_mod.ArtifactError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    summary = (
+        f"manifest: {result['imported']} imported, "
+        f"{result['duplicates']} duplicate(s), {result['skipped']} skipped"
+    )
+    target = f"/artifacts?program_id={pid}&msg={quote(summary)}"
+    if result["errors"]:
+        target += f"&err={quote(str(result['errors'][0].get('error') or '')[:200])}"
+    return RedirectResponse(target, status_code=303)
+
+
+@app.get("/artifacts/{artifact_id}", response_class=HTMLResponse)
+def artifact_view(
+    artifact_id: int,
+    request: Request,
+    msg: str = "",
+    session: Session = Depends(get_session),
+):
+    artifact = session.get(EvidenceArtifact, artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return templates.TemplateResponse(
+        request,
+        "artifact.html",
+        _ctx(
+            artifact=artifact,
+            program=session.get(Program, artifact.program_id)
+            if artifact.program_id
+            else None,
+            target=session.get(Target, artifact.target_id)
+            if artifact.target_id
+            else None,
+            finding=session.get(Finding, artifact.finding_id)
+            if artifact.finding_id
+            else None,
+            entity=session.get(Entity, artifact.entity_id)
+            if artifact.entity_id
+            else None,
+            paste=session.get(Paste, artifact.paste_id) if artifact.paste_id else None,
+            verification=artifacts_mod.verify_artifact(artifact),
+            meta_json=json.dumps(artifact.meta or {}, indent=2, sort_keys=True, default=str),
+            msg=msg,
+            storage_root=str(artifacts_mod.default_artifact_root()),
+        ),
+    )
+
+
+@app.get("/artifacts/{artifact_id}/content")
+def artifact_content(artifact_id: int, download: int = 0, session: Session = Depends(get_session)):
+    artifact = session.get(EvidenceArtifact, artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    try:
+        data = artifacts_mod.artifact_bytes(artifact)
+    except artifacts_mod.ArtifactError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    filename = re.sub(r'[^A-Za-z0-9._-]+', '-', artifact.filename or f"artifact-{artifact.id}")
+    disposition = "attachment" if _truthy(download) else "inline"
+    return Response(
+        content=data,
+        media_type=artifact.media_type or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'{disposition}; filename="{filename[:120]}"',
+            "Cache-Control": "private, max-age=3600",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+        },
+    )
+
+
+@app.post("/artifacts/{artifact_id}/delete")
+def artifact_delete(artifact_id: int, session: Session = Depends(get_session)):
+    artifact = session.get(EvidenceArtifact, artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    program_id = artifact.program_id
+    result = artifacts_mod.delete_artifact(session, artifact)
+    msg = "screenshot deleted"
+    if result["remaining_rows"]:
+        msg += " (bytes retained for other links)"
+    return RedirectResponse(
+        f"/artifacts?program_id={program_id or ''}&msg={quote(msg)}",
+        status_code=303,
+    )
+
+
+@app.get("/api/v1/tools")
+def api_tools():
+    """Adapter diagnostics: installed binary, version and strict-mode status."""
+    import shutil
+
+    from .collect.tools import adapter_specs, probe_version, strict_mode
+
+    tools = []
+    strict = strict_mode()
+    for spec in adapter_specs():
+        path = shutil.which(spec.binary)
+        version = probe_version(path, spec.version_args) if path else ""
+        tools.append(
+            {
+                "id": spec.id,
+                "binary": spec.binary,
+                "installed": bool(path),
+                "path": path or "",
+                "version": version,
+                "version_status": "missing" if not path else ("ok" if version else "unknown"),
+                "scope_mode": spec.scope_mode,
+                "strict_policy": spec.strict_policy,
+                "strict_disabled": bool(strict and spec.strict_policy == "never"),
+            }
+        )
+    return {
+        "version": __version__,
+        "strict_mode": strict,
+        "count": len(tools),
+        "installed": sum(1 for item in tools if item["installed"]),
+        "tools": tools,
+    }
+
+
+@app.get("/api/v1/artifacts")
+def api_artifacts(
+    program_id: int | None = None,
+    target_id: int | None = None,
+    finding_id: int | None = None,
+    entity_id: int | None = None,
+    source: str = "",
+    q: str = "",
+    limit: int = 60,
+    offset: int = 0,
+    session: Session = Depends(get_session),
+):
+    result = artifacts_mod.list_artifacts(
+        session,
+        program_id=program_id,
+        target_id=target_id,
+        finding_id=finding_id,
+        entity_id=entity_id,
+        source=source,
+        q=q,
+        limit=limit,
+        offset=offset,
+    )
+    return {
+        "total": result["total"],
+        "count": result["count"],
+        "limit": result["limit"],
+        "offset": result["offset"],
+        "next_offset": result["next_offset"],
+        "artifacts": [artifacts_mod.artifact_dict(row) for row in result["artifacts"]],
+    }
+
+
+@app.post("/api/v1/artifacts")
+def api_artifact_upload(
+    response: Response,
+    upload: UploadFile = File(...),
+    program_id: str = Form(""),
+    target_id: str = Form(""),
+    finding_id: str = Form(""),
+    entity_id: str = Form(""),
+    paste_id: str = Form(""),
+    source_url: str = Form(""),
+    source: str = Form("api"),
+    session: Session = Depends(get_session),
+):
+    pid = _api_optional_int(program_id, "program_id")
+    if pid is None:
+        raise HTTPException(status_code=400, detail="program_id is required")
+    raw = upload.file.read(artifacts_mod.MAX_IMAGE_BYTES + 1)
+    if len(raw) > artifacts_mod.MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="Image too large")
+    try:
+        artifact, duplicate = artifacts_mod.import_image(
+            session,
+            raw,
+            program_id=pid,
+            filename=upload.filename or "upload",
+            source=source or "api",
+            source_url=source_url,
+            target_id=_api_optional_int(target_id, "target_id"),
+            finding_id=_api_optional_int(finding_id, "finding_id"),
+            entity_id=_api_optional_int(entity_id, "entity_id"),
+            paste_id=_api_optional_int(paste_id, "paste_id"),
+        )
+    except artifacts_mod.ArtifactError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    response.status_code = 200 if duplicate else 201
+    return {
+        "duplicate": duplicate,
+        "artifact": artifacts_mod.artifact_dict(artifact),
+    }
+
+
+@app.post("/api/v1/artifacts/import")
+def api_artifact_import(
+    request: Request, payload: dict = Body(...), session: Session = Depends(get_session)
+):
+    _api_csrf(request)
+    manifest_path = str(payload.get("manifest_path") or "").strip()
+    if not manifest_path:
+        raise HTTPException(status_code=400, detail="manifest_path is required")
+    pid = _api_optional_int(payload.get("program_id"), "program_id")
+    if pid is None:
+        raise HTTPException(status_code=400, detail="program_id is required")
+    try:
+        result = artifacts_mod.import_manifest(
+            session,
+            manifest_path,
+            program_id=pid,
+            base_dir=payload.get("base_dir") or None,
+            target_id=_api_optional_int(payload.get("target_id"), "target_id"),
+            finding_id=_api_optional_int(payload.get("finding_id"), "finding_id"),
+            source=str(payload.get("source") or ""),
+        )
+    except artifacts_mod.ArtifactError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return result
+
+
+@app.get("/api/v1/artifacts/manifest")
+def api_artifact_manifest(
+    program_id: int | None = None,
+    include_meta: int = 1,
+    session: Session = Depends(get_session),
+):
+    return artifacts_mod.artifact_manifest(
+        session, program_id=program_id, include_meta=_truthy(include_meta)
+    )
+
+
+@app.get("/api/v1/artifacts/{artifact_id}")
+def api_artifact(artifact_id: int, session: Session = Depends(get_session)):
+    artifact = session.get(EvidenceArtifact, artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    payload = artifacts_mod.artifact_dict(artifact)
+    payload["verification"] = artifacts_mod.verify_artifact(artifact)
+    return payload
+
+
+@app.get("/api/v1/artifacts/{artifact_id}/content")
+def api_artifact_content(
+    artifact_id: int, download: int = 0, session: Session = Depends(get_session)
+):
+    return artifact_content(artifact_id, download=download, session=session)
+
+
+@app.delete("/api/v1/artifacts/{artifact_id}")
+def api_artifact_delete(
+    artifact_id: int, request: Request, session: Session = Depends(get_session)
+):
+    _api_csrf(request)
+    artifact = session.get(EvidenceArtifact, artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return artifacts_mod.delete_artifact(session, artifact)
+
+
 @app.post("/jobs")
 def create_job(
     runner: str = Form(...),
@@ -2544,6 +2955,7 @@ async def report_bundle_download(
             values,
             comments=str(form.get("comments") or ""),
             include_pdf=_truthy(form.get("include_pdf")),
+            include_screenshots=bool(values.get("include_screenshots")),
         )
     except report_templates.TemplateError as exc:
         raise HTTPException(status_code=400, detail="; ".join(exc.errors)) from exc

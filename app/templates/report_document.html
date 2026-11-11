@@ -77,6 +77,9 @@
     .footer { margin-top: 40px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11.5px; }
     .footer strong { color: var(--danger); }
     .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .screenshot { margin: 16px 0 22px; page-break-inside: avoid; }
+    .screenshot img { display: block; max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); }
+    .screenshot figcaption { color: var(--muted); font-size: 12px; margin-top: 5px; overflow-wrap: anywhere; }
     @media (max-width: 720px) { main.report { padding: 22px 18px 40px; } .cols { grid-template-columns: 1fr; } }
     @media print {
       main.report { max-width: none; padding: 0; }
@@ -381,6 +384,33 @@
     {% endif %}
     {% if findings_total > findings_shown %}
     <p class="empty">Showing the first {{ findings_shown }} of {{ findings_total }} findings.</p>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if variables.include_screenshots and screenshots and screenshots['items'] %}
+  <section>
+    <h2>Screenshots ({{ screenshots.total }})</h2>
+    <div class="warning">
+      Screenshots are included as captured. Redaction masks text fields, not
+      pixels; review every image before sharing this report.
+    </div>
+    {% for item in screenshots['items'] %}
+    <figure class="screenshot">
+      {% if item.data_uri %}
+      <img src="{{ item.data_uri }}" alt="Screenshot of {{ item.source_url or item.filename or 'target' }}">
+      {% endif %}
+      <figcaption>
+        <strong>{{ item.source_url or item.filename or 'Screenshot' }}</strong>
+        {% if item.target %} · {{ item.target }}{% endif %}
+        {% if item.finding_id %} · finding #{{ item.finding_id }}{% endif %}
+        {% if item.width and item.height %} · {{ item.width }} × {{ item.height }}{% endif %}
+        · <span class="mono">{{ item.sha256 }}</span>
+      </figcaption>
+    </figure>
+    {% endfor %}
+    {% if screenshots.total > screenshots.shown %}
+    <p class="empty">Showing the most recent {{ screenshots.shown }} of {{ screenshots.total }} screenshots.</p>
     {% endif %}
   </section>
   {% endif %}

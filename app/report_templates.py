@@ -32,7 +32,7 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from sqlmodel import Session, func, select
 
-from . import __version__, history, reporting
+from . import __version__, artifacts, history, reporting
 from .models import Entity, Paste, Program
 from .redaction import RedactionPolicy, policy_from
 from .triage import triage_snapshot_fields
@@ -156,6 +156,16 @@ _COMMON = (
     ),
     TemplateVariable("include_findings", "Include findings", kind="checkbox", default=True),
     TemplateVariable("include_evidence", "Include evidence", kind="checkbox", default=True),
+    TemplateVariable(
+        "include_screenshots",
+        "Include screenshots",
+        kind="checkbox",
+        default=False,
+        help=(
+            "Embeds imported screenshots in HTML and PDF. Images are included "
+            "as-is; redaction cannot mask text inside a screenshot."
+        ),
+    ),
     TemplateVariable("include_changes", "Include change summary", kind="checkbox", default=False),
     TemplateVariable(
         "include_triaged",
@@ -804,6 +814,16 @@ def build_context(
     changes = None
     if "changes" in template.sections or variables.get("include_changes"):
         changes = _changes_context(session, program_id, variables, policy)
+    screenshot_finding_ids = None
+    if variables.get("finding_id"):
+        screenshot_finding_ids = [finding.id for finding in findings if finding.id]
+    screenshots = artifacts.report_artifacts(
+        session,
+        program_id,
+        policy=policy,
+        include_data=bool(variables.get("include_screenshots")),
+        finding_ids=screenshot_finding_ids,
+    )
     capture_count = int(
         session.exec(
             select(func.count()).select_from(Paste).where(Paste.program_id == program_id)
@@ -848,6 +868,7 @@ def build_context(
         "findings": safe_findings,
         "findings_total": total_findings,
         "findings_shown": len(safe_findings),
+        "screenshots": screenshots,
         "highlights": highlights,
         "summary": {
             "risk_score": risk_score,
@@ -862,6 +883,7 @@ def build_context(
             "entity_counts": dict(sorted(entity_counts.items())),
             "target_count": len(targets),
             "capture_count": capture_count,
+            "screenshot_count": screenshots["total"],
             "in_scope_entities": sum(1 for e in entities if e.scope_status == "in"),
             "out_of_scope_entities": sum(1 for e in entities if e.scope_status == "out"),
             "unknown_scope_entities": sum(1 for e in entities if e.scope_status == "unknown"),
@@ -1205,6 +1227,44 @@ def render_markdown(context: dict) -> str:
             lines.append("_No active findings at the selected severity._")
         lines.append("")
 
+    screenshot_context = context.get("screenshots") or {}
+    if variables.get("include_screenshots") and screenshot_context.get("items"):
+        lines.extend(
+            [
+                f"## Screenshots ({screenshot_context.get('total', 0)})",
+                "",
+                "> Screenshots are evidence images captured from the target. "
+                "Redaction masks text fields, not pixels; review every image "
+                "before sharing. HTML and PDF exports embed the images.",
+                "",
+            ]
+        )
+        for index, item in enumerate(screenshot_context["items"], start=1):
+            caption = _md(item.get("source_url") or item.get("filename") or "screenshot")
+            lines.append(f"### Screenshot {index} — {caption}")
+            lines.append("")
+            lines.append(f"- **Source:** {_md_inline(item.get('source') or 'manual')}")
+            if item.get("target"):
+                lines.append(f"- **Target:** {_md_inline(item['target'])}")
+            if item.get("finding_id"):
+                lines.append(f"- **Finding:** #{item['finding_id']}")
+            if item.get("captured_at"):
+                lines.append(f"- **Captured:** {_md_inline(item['captured_at'])}")
+            if item.get("width") and item.get("height"):
+                lines.append(
+                    f"- **Dimensions:** {item['width']} × {item['height']}"
+                )
+            lines.append(f"- **SHA-256:** `{_md(item.get('sha256') or '')}`")
+            if item.get("error"):
+                lines.append(f"- **Warning:** {_md(item['error'])}")
+            lines.append("")
+        if screenshot_context.get("total", 0) > screenshot_context.get("shown", 0):
+            lines.append(
+                f"_Showing the most recent {screenshot_context.get('shown', 0)} of "
+                f"{screenshot_context.get('total', 0)} screenshots._"
+            )
+            lines.append("")
+
     if context.get("recommendations") and "recommendations" in sections:
         lines.extend(["## Recommendations", "", _md(context["recommendations"]), ""])
 
@@ -1252,10 +1312,26 @@ def render_json(context: dict) -> str:
         "targets": context["targets"],
         "entity_groups": context["entity_groups"],
         "findings": context["findings"],
+        "screenshots": _json_screenshots(context.get("screenshots") or {}),
         "highlights": context["highlights"],
         "changes": context["changes"],
     }
     return json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n"
+
+
+def _json_screenshots(value: dict) -> dict:
+    """Screenshot metadata without base64 bytes.
+
+    The JSON export is for automation and should stay small; the binary lives
+    in the review bundle or the artifact content endpoint. ``data_uri`` is an
+    HTML/PDF rendering detail, not part of the evidence contract.
+    """
+    payload = dict(value or {})
+    payload["items"] = [
+        {key: item for key, item in (entry or {}).items() if key != "data_uri"}
+        for entry in payload.get("items") or []
+    ]
+    return payload
 
 
 def render_pdf(context: dict) -> bytes:

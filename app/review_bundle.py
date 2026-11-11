@@ -12,6 +12,8 @@ read-only, needs no server and no login, and contains:
 * ``README.txt`` — what is inside and how to verify it offline
 * ``comments.md`` — optional reviewer comments
 * ``evidence/capture-*.json`` — redacted evidence manifests per capture
+* ``screenshots/artifact-*`` — optional screenshot bytes, only when explicitly
+  requested; pixels are not redacted and the verifier warns about that
 
 The zip never includes raw capture bodies. Evidence manifests are redacted by
 default; an explicit ``reveal`` report disables masking in both report and
@@ -35,7 +37,7 @@ from pathlib import Path
 
 from sqlmodel import Session, func, select
 
-from . import __version__, report_templates
+from . import __version__, artifacts, report_templates
 from .db import SCHEMA_VERSION
 from .manifest import build_manifest, verify_manifest_data
 from .models import Paste, Program
@@ -45,6 +47,8 @@ BUNDLE_VERSION = 1
 MAX_ENTRIES = 256
 MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
 MAX_CAPTURES = 100
+MAX_BUNDLE_SCREENSHOTS = 50
+MAX_BUNDLE_SCREENSHOT_BYTES = 32 * 1024 * 1024
 
 _HASH_KEYS = {
     "sha256",
@@ -167,6 +171,7 @@ def _readme(manifest: dict) -> bytes:
         "- manifest.sha256: SHA-256 of manifest.json",
         "- SHA256SUMS: sha256sum-compatible checksums for the payload",
         "- evidence/capture-*.json: redacted evidence manifest per capture",
+        "- screenshots/: imported screenshots (only when explicitly requested)",
         "- comments.md: reviewer comments (when supplied)",
         "",
         "What is NOT inside",
@@ -174,6 +179,8 @@ def _readme(manifest: dict) -> bytes:
         "Raw capture bodies, authentication cookies, tokens and secret values are",
         "not included. Evidence manifests contain hashes and redacted metadata.",
         "The raw evidence stays in the researcher's local Breadcrumb database.",
+        "Screenshot pixels are not redacted. When screenshots are included they",
+        "are byte-for-byte copies of the captured image; review them before sharing.",
         "",
         "Verify offline",
         "--------------",
@@ -205,9 +212,15 @@ def build_bundle(
     *,
     comments: str = "",
     include_pdf: bool = False,
+    include_screenshots: bool = False,
     generated_at=None,
 ) -> tuple[bytes, dict]:
     """Render one report context into a deterministic, verifiable zip."""
+    values = dict(values or {})
+    if include_screenshots:
+        # The flag is both a bundle policy and a report variable so the HTML,
+        # Markdown and PDF inside the zip actually reference what is shipped.
+        values["include_screenshots"] = True
     context = report_templates.build_context(
         session,
         program_id,
@@ -239,6 +252,68 @@ def build_bundle(
         session, program_id, policy
     )
     files.update(evidence_files)
+
+    screenshot_finding_id = None
+    if validated.get("finding_id"):
+        try:
+            screenshot_finding_id = int(validated["finding_id"])
+        except (TypeError, ValueError):
+            screenshot_finding_id = None
+    screenshot_result = artifacts.list_artifacts(
+        session,
+        program_id=program_id,
+        finding_id=screenshot_finding_id,
+        limit=MAX_BUNDLE_SCREENSHOTS,
+        offset=0,
+    )
+    screenshot_records: list[dict] = []
+    screenshot_skipped: list[dict] = []
+    if include_screenshots:
+        budget = MAX_UNCOMPRESSED_BYTES - sum(len(data) for data in files.values()) - 1_000_000
+        used = 0
+        for artifact in screenshot_result["artifacts"]:
+            if len(screenshot_records) >= MAX_BUNDLE_SCREENSHOTS:
+                screenshot_skipped.append(
+                    {"id": artifact.id, "reason": "screenshot count limit"}
+                )
+                continue
+            try:
+                data = artifacts.artifact_bytes(artifact)
+            except artifacts.ArtifactError as exc:
+                screenshot_skipped.append({"id": artifact.id, "reason": str(exc)})
+                continue
+            if used + len(data) > MAX_BUNDLE_SCREENSHOT_BYTES or used + len(data) > budget:
+                screenshot_skipped.append(
+                    {"id": artifact.id, "reason": "bundle screenshot size budget"}
+                )
+                continue
+            suffix = {
+                "image/png": ".png",
+                "image/jpeg": ".jpg",
+                "image/gif": ".gif",
+                "image/webp": ".webp",
+            }.get(artifact.media_type, ".bin")
+            path = f"screenshots/artifact-{artifact.id:04d}{suffix}"
+            files[path] = data
+            used += len(data)
+            screenshot_records.append(
+                {
+                    "id": artifact.id,
+                    "path": path,
+                    "bytes": len(data),
+                    "sha256": artifact.sha256,
+                    "media_type": artifact.media_type,
+                    "width": artifact.width,
+                    "height": artifact.height,
+                    "source_url": policy.text(artifact.source_url or ""),
+                    "filename": policy.text(artifact.filename or ""),
+                    "target_id": artifact.target_id,
+                    "finding_id": artifact.finding_id,
+                    "captured_at": artifact.captured_at.isoformat()
+                    if artifact.captured_at
+                    else None,
+                }
+            )
 
     safe_comments = policy.text(comments or "").strip()
     if safe_comments:
@@ -276,6 +351,18 @@ def build_bundle(
         "captures": capture_records,
         "captures_total": captures_total,
         "captures_included": len(capture_records),
+        "screenshots": {
+            "included": bool(include_screenshots),
+            "count": len(screenshot_records),
+            "total": screenshot_result["total"],
+            "items": screenshot_records,
+            "skipped": screenshot_skipped,
+            "pixels_are_not_redacted": True,
+            "limits": {
+                "max_screenshots": MAX_BUNDLE_SCREENSHOTS,
+                "max_bytes": MAX_BUNDLE_SCREENSHOT_BYTES,
+            },
+        },
         "comments": {
             "included": bool(safe_comments),
             "path": "comments.md" if safe_comments else None,
@@ -493,6 +580,42 @@ def verify_bundle(data: bytes) -> dict:
                 captures_ok = False
         check("capture_manifests", captures_ok)
 
+        screenshots = manifest.get("screenshots") or {}
+        if screenshots.get("included"):
+            screenshot_items = screenshots.get("items") or []
+            check(
+                "screenshot_limit",
+                len(screenshot_items) <= MAX_BUNDLE_SCREENSHOTS,
+                f"{len(screenshot_items)} screenshots, limit {MAX_BUNDLE_SCREENSHOTS}",
+            )
+            screenshots_ok = True
+            for item in screenshot_items:
+                path = item.get("path")
+                if not path or path not in names:
+                    screenshots_ok = False
+                    check(f"screenshot_present:{path}", False, "screenshot missing")
+                    continue
+                content = archive.read(path)
+                matches = (
+                    len(content) == item.get("bytes")
+                    and sha256_bytes(content) == item.get("sha256")
+                )
+                if not matches:
+                    screenshots_ok = False
+                    check(f"screenshot_hash:{path}", False, "size or sha256 mismatch")
+            check("screenshot_hashes", screenshots_ok)
+            warnings.append(
+                "screenshots are included byte-for-byte; redaction cannot mask "
+                "text or secrets visible in image pixels"
+            )
+        else:
+            check("screenshot_metadata", isinstance(screenshots, dict))
+        if screenshots.get("skipped"):
+            warnings.append(
+                f"{len(screenshots['skipped'])} screenshot(s) were not included "
+                "because of the bundle size or count limit"
+            )
+
         report_info = manifest.get("report") or {}
         redaction = report_info.get("redaction") or {}
         if redaction.get("enabled") is False or report_info.get("reveal"):
@@ -513,6 +636,7 @@ def verify_bundle(data: bytes) -> dict:
                 "files": manifest.get("file_count"),
                 "captures": manifest.get("captures_included"),
                 "captures_total": manifest.get("captures_total"),
+                "screenshots": (manifest.get("screenshots") or {}).get("count", 0),
                 "redaction": redaction.get("profile"),
                 "comments": bool((manifest.get("comments") or {}).get("included")),
             },

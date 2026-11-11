@@ -5,8 +5,76 @@ All notable changes to Breadcrumb are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The Leadline merge is the **0.4.0** release; **0.5.0** is the Phase A “Proof”
 release; **0.6.0** is the Phase B “Memory” release; **0.7.0** is the Phase C
-“Report” release; **0.8.0** is the Phase D “Automate” release. The version in
-`app/__init__.py` is `0.8.0`.
+“Report” release; **0.8.0** is the Phase D “Automate” release; **0.9.0** is the
+Phase E “Capture” release. The version in `app/__init__.py` is `0.9.0`.
+
+## [0.9.0] — 2026-11-11
+
+Phase E closes the screenshot evidence gap without adding a browser. Breadcrumb
+imports images produced by EyeWitness, Gowitness or a manual upload, stores the
+bytes in a content-addressed directory, and keeps only metadata in SQLite.
+Schema **8** adds `EvidenceArtifact`; existing releases and tags are unchanged.
+
+### Added — screenshot evidence
+
+- `app/artifacts.py`: magic-byte image sniffing (PNG/JPEG/GIF/WebP), dimension
+  parsing, content-addressed storage, SHA-256 verification, upload/import,
+  listing, filtering, export, manifest and deletion.
+- Schema 8 `EvidenceArtifact` links an image to a program and, when known, a
+  target, capture, entity or finding. Paths are relative to the artifact root
+  (`<database>.artifacts` or `BREADCRUMB_ARTIFACT_DIR`); bytes are never stored
+  in SQLite.
+- EyeWitness/Gowitness and generic JSON/JSONL/CSV manifest import with
+  case-insensitive field aliases, relative-path resolution, per-row errors,
+  status/title/perceptual-hash provenance and idempotent re-imports.
+- Dedupe key: program + exact SHA-256 + source URL + finding link. Identical
+  bytes are written once and can back multiple evidence rows. Deleting a row
+  removes the file only when the final reference is gone.
+- Guardrails: 12 MiB/image, 12,000 px/side, 2,000 rows / 5 MiB per manifest,
+  1,000 images/import, magic-byte validation, SVG/PDF rejection, path-traversal
+  checks and a hash-verifying sandboxed content endpoint.
+- Imports never auto-create targets. Explicit links must belong to the same
+  program; otherwise the target/entity is inferred from the source URL using
+  existing scope rules.
+
+### Added — UI, API and CLI
+
+- `/artifacts` gallery with filters, thumbnail grid, upload form and manifest
+  import; `/artifacts/<id>` detail with provenance, links, storage path and live
+  hash verification. Program pages show recent screenshots; the sidebar links
+  the gallery.
+- API: `GET/POST /api/v1/artifacts`, `POST /api/v1/artifacts/import`,
+  `GET /api/v1/artifacts/manifest`, `GET/DELETE /api/v1/artifacts/<id>` and
+  `GET /api/v1/artifacts/<id>/content`. New uploads return 201; duplicates
+  return 200 with the existing row.
+- CLI: `artifacts list/import/show/export/delete/manifest`. `bundle` adds
+  `--include-screenshots`.
+- `GET /api/v1/tools` exposes adapter install/version/scope diagnostics for the
+  UI and support scripts; `breadcrumb tools` remains the CLI view.
+
+### Added — reports and review bundles
+
+- New `include_screenshots` template variable (default off). HTML embeds data
+  URIs, PDF embeds PNG/JPEG, Markdown lists source/dimensions/SHA-256, and JSON
+  includes metadata while omitting `data_uri`.
+- Screenshot captions pass through the same redaction and HTML-escaping pipeline
+  as every other report value.
+- Review bundles include screenshots only when explicitly requested: up to 50
+  images / 32 MiB, byte-for-byte under `screenshots/`, listed with hashes in
+  `manifest.json`, verified in-memory, and warned as **not pixel-redacted**.
+- Reports, bundles and docs state plainly that redaction masks text fields, not
+  image pixels.
+
+### Docs and tests
+
+- New `docs/SCREENSHOT_COOKBOOK.md` and `docs/ADAPTER_SAFETY.md`; README,
+  CHANGELOG and docs index updated.
+- `tests/test_phase_e.py` covers schema 8, all four raster formats, rejection
+  of SVG/PDF/corrupt/oversized images, hash preservation, target/entity linking,
+  dedupe and shared-file deletion, JSON/JSONL/CSV manifests, bad rows,
+  no-auto-target behavior, report escaping/redaction, HTML/PDF embeds, bundle
+  inclusion/tamper detection, web/API/CLI routes and adapter diagnostics.
+- Full suite: **267 passed, 1 warning** (2026-11-11).
 
 ## [0.8.0] — 2026-11-11
 
