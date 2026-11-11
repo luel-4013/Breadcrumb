@@ -1,9 +1,9 @@
 # Breadcrumb + Leadline planning documents
 
-Status: **Phase C of the flagship plan is implemented and released as `0.7.0`
-(2026-11-11). Phase B is `0.6.0` (2026-11-10), Phase A is `0.5.0`
-(2026-11-09), and Phases 0–8 are implemented and released as `0.4.0`
-(2026-11-08). The `v0.4.0` tag remains intact; 0.5.0–0.7.0 are additive.**
+Status: **Phase D of the flagship plan is implemented and released as `0.8.0`
+(2026-11-11). Phase C is `0.7.0`, Phase B is `0.6.0` (2026-11-10), Phase A is
+`0.5.0` (2026-11-09), and Phases 0–8 are implemented and released as `0.4.0`
+(2026-11-08). The `v0.4.0` tag remains intact; 0.5.0–0.8.0 are additive.**
 Included: durable job queue/worker, scope guard, encrypted-at-rest
 header-profile secrets, the twelve-phase `leadline-recon` preset (DNS, host
 intel, ports/TLS, HTTP, tech, JS, params, headers, API, vuln candidates, CVE
@@ -24,7 +24,10 @@ Evidence Manifest v2, `breadcrumb doctor`, sample demo, and a benchmark
 harness. Phase B (0.6.0) implements the memory slice: Ledger v2, Diff v2,
 Scope v2 and Graph v2. Phase C (0.7.0) implements the report slice: five
 templates, default-on redaction, a verifiable offline review bundle, and
-HackerOne/DefectDojo/Ghostwriter/Dradis/SARIF exports.
+HackerOne/DefectDojo/Ghostwriter/Dradis/SARIF exports. Phase D (0.8.0)
+implements the automation slice: local folder schedules with run history,
+a local parser SDK, idempotent/bulk/paginated API automation, and recorded
+100k-import/1M-read benchmarks.
 Date: 2026-10-27 to 2026-11-08
 Repos inspected:
 
@@ -47,8 +50,8 @@ no code. The implementation is additive and is released as `0.4.0`.
 | Legacy schema backfill | Implemented | `chain_seq`, `capture_key`, `evidencechain` migration test |
 
 Test baseline after Phase 0: **72 passed, 1 warning** (historical).
-Current suite after the native-executor, secrets, Phases 4–8 and Phases A–C:
-**234 passed, 1 warning** (2026-11-11).
+Current suite after the native-executor, secrets, Phases 4–8 and Phases A–D:
+**249 passed, 1 warning** (2026-11-11).
 
 ## Native-executor vertical slice (2026-11-06)
 
@@ -237,6 +240,38 @@ Operational documents added by Phase C:
 25. **[INTEGRATION_MAPPINGS.md](INTEGRATION_MAPPINGS.md)** — HackerOne,
     DefectDojo, Ghostwriter, Dradis, SARIF, CSV/JSON/targets field mappings and
     compatibility notes.
+
+Operational documents added by Phase D:
+
+26. **[AUTOMATION_COOKBOOK.md](AUTOMATION_COOKBOOK.md)** — folder schedules,
+    scheduler/cron, idempotency keys, bulk ingest, pagination, CI gate, webhooks
+    and backup recipes.
+27. **[PARSER_AUTHORING.md](PARSER_AUTHORING.md)** — local parser SDK, the
+    `ParseResult` contract, a complete example, test pattern, checklist and
+    trust boundary.
+28. **[PERFORMANCE_TUNING.md](PERFORMANCE_TUNING.md)** — import/read
+    benchmarks, 1M-entity baseline, query plans, indexes, maintenance and
+    capacity planning.
+
+## Phase D implementation status (2026-11-11)
+
+| Capability | Status | Evidence |
+|---|---|---|
+| Folder schedules + run history | Implemented | `app/schedules.py`; `Schedule`/`ScheduleRun`; schema 7 |
+| Unattended scheduler + cron mode | Implemented | `breadcrumb scheduler`; `run_due`; overlap/stale recovery tests |
+| Idempotent folder imports | Implemented | content-hash capture keys namespaced by schedule; duplicate test |
+| Local parser SDK | Implemented | `app/parsers/sdk.py`; contract validation; broken-plugin isolation test |
+| API automation | Implemented | `capture_key`/`Idempotency-Key`, bulk paste (207), findings pagination |
+| Schedule/parser web + API | Implemented | `/schedules`, `/parsers`, `/api/v1/schedules`, `/api/v1/parsers` |
+| 100k import benchmark | Verified | 100,001 entities in 80.913 s (~1,236/s), 100% completeness, 0 skipped |
+| 1M read benchmark | Verified | slowest 1.395 s; filtered Ledger 0.760 s; search 0.771 s; target 2 s |
+| Docs | Implemented | automation cookbook, parser guide, performance tuning |
+
+Acceptance note: the 7-day unattended run is an operational soak, covered by
+run-history/stale/overlap tests and the `scheduler --once` cron path rather
+than a wall-clock week in CI. A third-party parser is exercised by the Phase D
+test fixture without core changes. The OpenAPI examples are covered by route
+and API tests; the generated OpenAPI document is served at `/openapi.json`.
 
 ## One-paragraph summary
 

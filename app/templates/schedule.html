@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}{{ schedule.name }} · Schedules · Breadcrumb{% endblock %}
+{% block crumb %}Schedules <span class="sep">/</span> <span class="sub">{{ schedule.name }}</span>{% endblock %}
+
+{% block actions %}
+<a class="btn ghost sm" href="/schedules">All schedules</a>
+<form method="post" action="/schedules/{{ schedule.id }}/run">
+  <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+  <button class="primary sm" type="submit">Run now</button>
+</form>
+{% endblock %}
+
+{% block content %}
+{% if request.query_params.get('msg') %}<div class="warn-box">{{ request.query_params.get('msg') }}</div>{% endif %}
+
+<div class="tiles">
+  <div class="tile"><span class="k">Status</span><span class="v"><span class="badge">{{ schedule.last_status }}</span></span><span class="d">{{ 'enabled' if schedule.enabled else 'disabled' }}</span></div>
+  <div class="tile"><span class="k">Runs</span><span class="v">{{ schedule.run_count }}</span><span class="d">every {{ schedule.interval_seconds }}s</span></div>
+  <div class="tile"><span class="k">Last run</span><span class="v" style="font-size:1rem">{{ (schedule.last_run_at or '—')[:16].replace('T', ' ') }}</span><span class="d">next {{ (schedule.next_run_at or '—')[:16].replace('T', ' ') }}</span></div>
+  <div class="tile"><span class="k">Program</span><span class="v" style="font-size:1rem">{{ program_names.get(schedule.program_id, 'unassigned') if schedule.program_id else 'unassigned' }}</span><span class="d">target {{ schedule.target_id or '—' }}</span></div>
+</div>
+
+<section class="card">
+  <h2>Folder schedule</h2>
+  <p class="mono">{{ schedule.source }}</p>
+  <p class="dim">
+    Overlap policy: <code>{{ schedule.overlap_policy }}</code> ·
+    move processed: <code>{{ schedule.move_processed }}</code> ·
+    content-hash capture keys are namespaced to this schedule.
+  </p>
+  {% if schedule.last_error %}<div class="warn-box">{{ schedule.last_error }}</div>{% endif %}
+  <div class="row">
+    <form method="post" action="/schedules/{{ schedule.id }}/run">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+      <input type="hidden" name="force" value="1">
+      <button class="btn sm" type="submit">Force run</button>
+    </form>
+    {% if schedule.enabled %}
+    <form method="post" action="/schedules/{{ schedule.id }}/disable">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+      <button class="btn sm" type="submit">Disable</button>
+    </form>
+    {% else %}
+    <form method="post" action="/schedules/{{ schedule.id }}/enable">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+      <button class="btn sm" type="submit">Enable</button>
+    </form>
+    {% endif %}
+    <form method="post" action="/schedules/{{ schedule.id }}/delete" data-confirm="Delete schedule {{ schedule.name }} and its run history?">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+      <button class="btn ghost sm" type="submit">Delete</button>
+    </form>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Edit</h2>
+  <form method="post" action="/schedules/{{ schedule.id }}" class="stack" style="max-width:760px">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+    <div class="row">
+      <input name="name" value="{{ schedule.name }}" required style="flex:1">
+      <input name="source" value="{{ schedule.source }}" required class="mono" style="flex:2">
+    </div>
+    <div class="row">
+      <label class="row" style="gap:6px">
+        Program
+        <select name="program_id">
+          <option value="">(unassigned)</option>
+          {% for p in programs %}<option value="{{ p.id }}" {{ 'selected' if p.id == schedule.program_id else '' }}>{{ p.name }}</option>{% endfor %}
+        </select>
+      </label>
+      <label class="row" style="gap:6px">
+        Every
+        <input name="interval_seconds" type="number" min="10" value="{{ schedule.interval_seconds }}" style="width:100px"> seconds
+      </label>
+      <label class="row" style="gap:6px">
+        Overlap
+        <select name="overlap_policy">
+          <option value="skip" {{ 'selected' if schedule.overlap_policy == 'skip' else '' }}>skip</option>
+          <option value="queue" {{ 'selected' if schedule.overlap_policy == 'queue' else '' }}>queue</option>
+        </select>
+      </label>
+      <label class="row" style="gap:6px"><input type="checkbox" name="move_processed" value="on" {{ 'checked' if schedule.move_processed else '' }}> move to processed/</label>
+      <label class="row" style="gap:6px"><input type="checkbox" name="enabled" value="on" {{ 'checked' if schedule.enabled else '' }}> enabled</label>
+      <button class="primary" type="submit">Save</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Run history</h2>
+  {% if runs %}
+  <table>
+    <thead><tr><th>Run</th><th>Status</th><th>Seen</th><th>New</th><th>Duplicates</th><th>Entities</th><th>Findings</th><th>Finished</th></tr></thead>
+    <tbody>
+      {% for r in runs %}
+      <tr>
+        <td>#{{ r.id }}</td>
+        <td>
+          <span class="badge">{{ r.status }}</span>
+          {% if r.error %}<div class="dim">{{ r.error }}</div>{% endif %}
+        </td>
+        <td>{{ r.files_seen }}</td>
+        <td>{{ r.files_ingested }}</td>
+        <td>{{ r.detail.get('duplicates', 0) }}</td>
+        <td>{{ r.entities }}</td>
+        <td>{{ r.findings }}</td>
+        <td class="dim">{{ (r.finished_at or '')[:19].replace('T', ' ') }}</td>
+      </tr>
+      {% if r.detail.get('files') %}
+      <tr>
+        <td colspan="8">
+          <details>
+            <summary class="dim">{{ r.detail.get('files')|length }} file(s) — click for detail</summary>
+            <table>
+              <thead><tr><th>File</th><th>Status</th><th>Capture</th><th>Entities</th><th>Findings</th><th>Note</th></tr></thead>
+              <tbody>
+                {% for f in r.detail.get('files') %}
+                <tr>
+                  <td class="mono">{{ f.name }}</td>
+                  <td>{{ f.status }}</td>
+                  <td>{% if f.paste_id %}<a href="/pastes/{{ f.paste_id }}">#{{ f.paste_id }}</a>{% else %}—{% endif %}</td>
+                  <td>{{ f.entities if f.entities is defined else '—' }}</td>
+                  <td>{{ f.findings if f.findings is defined else '—' }}</td>
+                  <td class="dim">{{ f.error if f.error is defined else (f.warning if f.warning is defined else '') }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </details>
+        </td>
+      </tr>
+      {% endif %}
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No runs yet. Press <strong>Run now</strong> or start <code>breadcrumb scheduler</code>.</p>
+  {% endif %}
+</section>
+{% endblock %}

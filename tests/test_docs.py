@@ -61,8 +61,16 @@ def test_export_routes_exist():
         "/reports/{program_id}/sarif",
         "/reports/{program_id}/targets.txt",
         "/api/v1/pastes",
+        "/api/v1/pastes/bulk",
         "/api/v1/pastes/{paste_id}/report",
         "/api/v1/pastes/{paste_id}/manifest",
+        "/api/v1/schedules",
+        "/api/v1/schedules/{schedule_id}",
+        "/api/v1/schedules/{schedule_id}/run",
+        "/api/v1/parsers",
+        "/schedules",
+        "/schedules/{schedule_id}",
+        "/parsers",
         "/api/v1/entities",
         "/api/v1/entities/bulk",
         "/api/v1/programs",
@@ -116,3 +124,16 @@ def test_readme_api_example_shape():
     assert r.status_code == 201, r.text
     body = r.json()
     assert {"paste_id", "entities", "parsers", "errors", "warning"} <= set(body)
+
+
+def test_phase_d_docs_are_linked():
+    readme = _readme()
+    for name in (
+        "AUTOMATION_COOKBOOK.md",
+        "PARSER_AUTHORING.md",
+        "PERFORMANCE_TUNING.md",
+    ):
+        assert os.path.exists(os.path.join(ROOT, "docs", name)), name
+        assert name in readme, f"README does not link docs/{name}"
+        with open(os.path.join(ROOT, "docs", "README.md")) as f:
+            assert name in f.read(), f"docs index does not list {name}"

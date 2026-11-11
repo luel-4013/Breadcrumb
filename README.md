@@ -364,6 +364,46 @@ See [docs/REPORT_COOKBOOK.md](docs/REPORT_COOKBOOK.md),
 [docs/REDACTION_GUIDE.md](docs/REDACTION_GUIDE.md) and
 [docs/INTEGRATION_MAPPINGS.md](docs/INTEGRATION_MAPPINGS.md).
 
+## Automation: schedules and local parsers
+
+**Scheduled re-import** watches one local folder and imports new files through
+the normal capture path. There is no cloud scheduler and no daemon installed by
+default; run the scheduler from cron/systemd or in a terminal.
+
+```bash
+breadcrumb schedule add acme-nightly ~/recon/acme/drop --program 1 --interval 3600
+breadcrumb schedule list
+breadcrumb schedule show acme-nightly
+breadcrumb schedule run acme-nightly        # run one now
+breadcrumb scheduler --poll 30              # foreground loop
+breadcrumb scheduler --once                 # one due-check, for cron
+```
+
+Each run records `ok`/`partial`/`error`/`skipped`, per-file detail, entities,
+findings and errors; identical bytes are deduplicated by content hash, and
+successful files move to `processed/`. The web UI is `/schedules`, the API is
+`/api/v1/schedules`. URL/API pulls are deliberately absent: an external tool
+fetches into the folder, so Breadcrumb never stores schedule credentials or
+opens an SSRF path.
+
+**Local parser SDK** loads your own parsers from `$BREADCRUMB_PARSER_DIR` or
+`~/.breadcrumb/parsers`. There is no remote marketplace; a plugin is imported
+Python and runs with your permissions. Broken plugins are listed at `/parsers`
+and in `breadcrumb parsers --json` but never stop startup. See
+[docs/PARSER_AUTHORING.md](docs/PARSER_AUTHORING.md) for the contract, a full
+example and the trust boundary.
+
+**Automation-friendly API**: `capture_key` / `Idempotency-Key` makes retries
+safe (201 new, 200 duplicate), `POST /api/v1/pastes/bulk` imports up to 100
+captures with per-item isolation, and `GET /api/v1/findings` is paginated with
+`total`/`next_offset`. CI can use `breadcrumb gate` or `/api/v1/gate`.
+See [docs/AUTOMATION_COOKBOOK.md](docs/AUTOMATION_COOKBOOK.md) for cron, CI,
+bulk, pagination and notification recipes.
+
+Performance is measured, not assumed: import and read-path benchmarks, query
+plans, the 1M-entity baseline and tuning rules are in
+[docs/PERFORMANCE_TUNING.md](docs/PERFORMANCE_TUNING.md).
+
 ## CLI
 
 ```bash
@@ -381,6 +421,11 @@ python -m app.cli gate 1 --max-severity high   # exit 1 to fail a CI job
 python -m app.cli findings --program 1 --min-severity high
 python -m app.cli programs --json
 python -m app.cli watch ~/recon-drop --program 1   # auto-ingest a drop folder
+python -m app.cli schedule add acme ~/recon/acme/drop --program 1 --interval 3600
+python -m app.cli schedule list                    # run history lives on show
+python -m app.cli schedule run acme --json
+python -m app.cli scheduler --once                 # cron-friendly due check
+python -m app.cli parsers --json                   # built-in + local plugins
 python -m app.cli backup -o nightly.db
 python -m app.cli worker --poll 2 --lease 120      # durable native/adapter worker
 python -m app.cli collect example.com --program 1 --collector leadline-recon
@@ -402,9 +447,21 @@ python -m app.cli import-leadline --db /path/to/leadline.db --dry-run
 ## API v1
 
 ```bash
-# ingest
+# ingest (idempotent: 201 new, 200 duplicate)
 curl -X POST /api/v1/pastes -H 'Content-Type: application/json' \
-  -d '{"text": "...", "program_id": 1}'
+  -d '{"text": "...", "program_id": 1, "capture_key": "tool:run:1"}'
+subfinder -d example.com -silent \
+  | curl -X POST /api/v1/pastes -H 'Idempotency-Key: subfinder:acme:1' --data-binary @-
+
+# bounded bulk ingest (207, per-item isolation, max 100)
+curl -X POST /api/v1/pastes/bulk -H 'Content-Type: application/json' \
+  -d '{"program_id":1,"captures":[{"filename":"a.jsonl","text":"...","capture_key":"a:1"}]}'
+
+# scheduled local folder re-import
+curl -X POST /api/v1/schedules -H 'Content-Type: application/json' \
+  -d '{"name":"acme","source":"/home/me/recon/acme/drop","program_id":1,"interval_seconds":3600}'
+curl -X POST /api/v1/schedules/1/run
+curl /api/v1/parsers                    # built-in + local plugin catalog
 
 # import trust + evidence
 curl '/api/v1/pastes/1/report'          # completeness, skipped rows, issues, hint
@@ -413,7 +470,7 @@ curl '/api/v1/doctor'                   # diagnostics (200 ok, 503 failure)
 
 # query (paginated)
 curl '/api/v1/entities?program_id=1&type=subdomain&limit=100&offset=0'
-curl '/api/v1/findings?program_id=1&min_severity=high'
+curl '/api/v1/findings?program_id=1&min_severity=high&limit=100&offset=0'
 curl /api/v1/programs
 
 # cross-program memory + cross-selector diff
@@ -475,8 +532,8 @@ reverse proxy.
 - **0.7.0 — Report:** five templates, default-on redaction, review bundle,
   HackerOne/DefectDojo/Ghostwriter/Dradis/SARIF exports. Implemented.
 - **0.8.0 — Automate:** scheduled re-import, local parser SDK, stable API
-  pagination, 1M-entity performance. Next.
-- **0.9.0 — Capture:** optional screenshot import and adapter hardening.
+  pagination, 1M-entity performance. Implemented.
+- **0.9.0 — Capture:** optional screenshot import and adapter hardening. Next.
 - **1.0.0 — Flagship:** security/migration/rollback/soak gates and docs.
 
 See [docs/IMPORT_COOKBOOK.md](docs/IMPORT_COOKBOOK.md),
@@ -485,8 +542,11 @@ See [docs/IMPORT_COOKBOOK.md](docs/IMPORT_COOKBOOK.md),
 [docs/DIFF_COOKBOOK.md](docs/DIFF_COOKBOOK.md),
 [docs/SCOPE_DECISIONS.md](docs/SCOPE_DECISIONS.md),
 [docs/REPORT_COOKBOOK.md](docs/REPORT_COOKBOOK.md),
-[docs/REDACTION_GUIDE.md](docs/REDACTION_GUIDE.md) and
-[docs/INTEGRATION_MAPPINGS.md](docs/INTEGRATION_MAPPINGS.md).
+[docs/REDACTION_GUIDE.md](docs/REDACTION_GUIDE.md),
+[docs/INTEGRATION_MAPPINGS.md](docs/INTEGRATION_MAPPINGS.md),
+[docs/AUTOMATION_COOKBOOK.md](docs/AUTOMATION_COOKBOOK.md),
+[docs/PARSER_AUTHORING.md](docs/PARSER_AUTHORING.md) and
+[docs/PERFORMANCE_TUNING.md](docs/PERFORMANCE_TUNING.md).
 
 ## Contributing
 

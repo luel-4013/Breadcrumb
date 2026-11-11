@@ -46,6 +46,7 @@ from . import (
     reporting,
     review_bundle,
     runners,
+    schedules,
     triage,
 )
 from . import ingest as ingest_mod
@@ -1525,6 +1526,183 @@ def runners_view(request: Request, session: Session = Depends(get_session)):
             adapters_enabled=adapters_enabled(),
             strict_mode=strict_mode(),
             maintenance=get_app_state(session),
+        ),
+    )
+
+
+@app.get("/schedules", response_class=HTMLResponse)
+def schedules_view(request: Request, session: Session = Depends(get_session)):
+    rows = schedules.list_schedules(session)
+    programs = _programs(session)
+    runs = schedules.list_runs(session, limit=50)
+    return templates.TemplateResponse(
+        request,
+        "schedules.html",
+        _ctx(
+            schedules=[schedules.schedule_dict(item) for item in rows],
+            runs=[schedules.run_dict(run) for run in runs],
+            programs=programs,
+            program_names={program.id: program.name for program in programs},
+        ),
+    )
+
+
+@app.post("/schedules")
+def create_schedule_route(
+    name: str = Form(...),
+    source: str = Form(...),
+    program_id: str = Form(""),
+    interval_seconds: int = Form(300),
+    overlap_policy: str = Form("skip"),
+    move_processed: str = Form(""),
+    enabled: str = Form("on"),
+    session: Session = Depends(get_session),
+):
+    try:
+        schedule = schedules.create_schedule(
+            session,
+            name,
+            source,
+            program_id=int(program_id) if program_id.strip() else None,
+            interval_seconds=interval_seconds,
+            overlap_policy=overlap_policy,
+            move_processed=bool(move_processed),
+            enabled=bool(enabled),
+        )
+    except (ValueError, TypeError) as exc:
+        return RedirectResponse(
+            "/schedules?msg=" + quote(f"could not create schedule: {exc}"),
+            status_code=303,
+        )
+    return RedirectResponse(
+        f"/schedules/{schedule.id}?msg=" + quote("schedule created"),
+        status_code=303,
+    )
+
+
+@app.get("/schedules/{schedule_id}", response_class=HTMLResponse)
+def schedule_view(
+    request: Request, schedule_id: int, session: Session = Depends(get_session)
+):
+    schedule = schedules.get_schedule(session, schedule_id)
+    if schedule is None:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    runs = schedules.list_runs(session, schedule_id, limit=100)
+    programs = _programs(session)
+    return templates.TemplateResponse(
+        request,
+        "schedule.html",
+        _ctx(
+            schedule=schedules.schedule_dict(schedule),
+            runs=[schedules.run_dict(run) for run in runs],
+            programs=programs,
+            program_names={program.id: program.name for program in programs},
+        ),
+    )
+
+
+@app.post("/schedules/{schedule_id}")
+async def update_schedule_route(
+    schedule_id: int, request: Request, session: Session = Depends(get_session)
+):
+    form = await request.form()
+    fields: dict = {}
+    for key in ("name", "source", "overlap_policy"):
+        if key in form:
+            fields[key] = form.get(key)
+    if "interval_seconds" in form:
+        fields["interval_seconds"] = form.get("interval_seconds")
+    if "program_id" in form:
+        raw = (form.get("program_id") or "").strip()
+        fields["program_id"] = int(raw) if raw else None
+    for key in ("move_processed", "enabled"):
+        if key in form:
+            fields[key] = form.get(key) in ("on", "1", "true", "yes")
+    try:
+        schedules.update_schedule(session, schedule_id, **fields)
+    except (ValueError, TypeError) as exc:
+        return RedirectResponse(
+            f"/schedules/{schedule_id}?msg=" + quote(f"could not update: {exc}"),
+            status_code=303,
+        )
+    return RedirectResponse(
+        f"/schedules/{schedule_id}?msg=" + quote("schedule updated"),
+        status_code=303,
+    )
+
+
+@app.post("/schedules/{schedule_id}/run")
+def run_schedule_route(
+    schedule_id: int, force: str = Form(""), session: Session = Depends(get_session)
+):
+    schedule = schedules.get_schedule(session, schedule_id)
+    if schedule is None:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    result = schedules.run_schedule(session, schedule, force=bool(force))
+    detail = (
+        f"{result.get('status')}: {result.get('files_seen', 0)} seen, "
+        f"{result.get('files_ingested', 0)} new capture(s), "
+        f"{result.get('entities', 0)} entities"
+    )
+    if result.get("error"):
+        detail += f" — {result['error']}"
+    return RedirectResponse(
+        f"/schedules/{schedule_id}?msg=" + quote(detail), status_code=303
+    )
+
+
+@app.post("/schedules/{schedule_id}/enable")
+def enable_schedule_route(
+    schedule_id: int, session: Session = Depends(get_session)
+):
+    try:
+        schedules.update_schedule(session, schedule_id, enabled=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return RedirectResponse(
+        f"/schedules/{schedule_id}?msg=" + quote("schedule enabled"),
+        status_code=303,
+    )
+
+
+@app.post("/schedules/{schedule_id}/disable")
+def disable_schedule_route(
+    schedule_id: int, session: Session = Depends(get_session)
+):
+    try:
+        schedules.update_schedule(session, schedule_id, enabled=False)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return RedirectResponse(
+        f"/schedules/{schedule_id}?msg=" + quote("schedule disabled"),
+        status_code=303,
+    )
+
+
+@app.post("/schedules/{schedule_id}/delete")
+def delete_schedule_route(
+    schedule_id: int, session: Session = Depends(get_session)
+):
+    if not schedules.delete_schedule(session, schedule_id):
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return RedirectResponse(
+        "/schedules?msg=" + quote("schedule deleted"), status_code=303
+    )
+
+
+@app.get("/parsers", response_class=HTMLResponse)
+def parsers_view(request: Request):
+    from .parsers import parser_catalog
+    from .parsers.sdk import default_parser_dir, plugin_catalog, plugin_errors
+
+    return templates.TemplateResponse(
+        request,
+        "parsers.html",
+        _ctx(
+            catalog=parser_catalog(),
+            plugin_directory=str(default_parser_dir()),
+            plugins=plugin_catalog(),
+            errors=plugin_errors(),
         ),
     )
 
@@ -3018,31 +3196,173 @@ def api_search(q: str = "", session: Session = Depends(get_session)):
 
 # ---------------- JSON API v1 (automation: pipe tool output straight in) ----------------
 
+def _api_optional_int(value, field: str) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"{field} must be an integer") from exc
+
+
+def _api_validate_links(
+    session: Session, program_id: int | None, target_id: int | None
+) -> None:
+    if program_id is not None and session.get(Program, program_id) is None:
+        raise HTTPException(status_code=400, detail=f"program #{program_id} not found")
+    if target_id is not None and session.get(Target, target_id) is None:
+        raise HTTPException(status_code=400, detail=f"target #{target_id} not found")
+
+
+@app.get("/api/v1/schedules")
+def api_schedules(session: Session = Depends(get_session)):
+    """List local folder schedules. API v1 is additive and unpaginated here."""
+    rows = schedules.list_schedules(session)
+    return {
+        "count": len(rows),
+        "schedules": [schedules.schedule_dict(item) for item in rows],
+    }
+
+
+@app.post("/api/v1/schedules", status_code=201)
+def api_create_schedule(
+    payload: dict = Body(...), session: Session = Depends(get_session)
+):
+    """Create a folder schedule. Only local paths are accepted.
+
+    Scheduled URL/API pulls are intentionally absent: use an external fetch
+    tool to put files in the folder, then let Breadcrumb import them.
+    """
+    try:
+        schedule = schedules.create_schedule(
+            session,
+            str(payload.get("name") or ""),
+            str(payload.get("source") or ""),
+            program_id=payload.get("program_id"),
+            target_id=payload.get("target_id"),
+            interval_seconds=payload.get("interval_seconds", 300),
+            overlap_policy=payload.get("overlap_policy", "skip"),
+            move_processed=payload.get("move_processed", True),
+            enabled=payload.get("enabled", True),
+        )
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return schedules.schedule_dict(schedule)
+
+
+@app.get("/api/v1/schedules/{schedule_id}")
+def api_schedule(schedule_id: int, session: Session = Depends(get_session)):
+    schedule = schedules.get_schedule(session, schedule_id)
+    if schedule is None:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    data = schedules.schedule_dict(schedule)
+    data["runs"] = [
+        schedules.run_dict(run)
+        for run in schedules.list_runs(session, schedule_id, limit=100)
+    ]
+    return data
+
+
+@app.patch("/api/v1/schedules/{schedule_id}")
+def api_update_schedule(
+    schedule_id: int,
+    payload: dict = Body(...),
+    session: Session = Depends(get_session),
+):
+    allowed = {
+        "name",
+        "source",
+        "program_id",
+        "target_id",
+        "interval_seconds",
+        "overlap_policy",
+        "move_processed",
+        "enabled",
+    }
+    fields = {key: payload[key] for key in allowed if key in payload}
+    try:
+        schedule = schedules.update_schedule(session, schedule_id, **fields)
+    except (ValueError, TypeError) as exc:
+        status = 404 if "not found" in str(exc) else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    return schedules.schedule_dict(schedule)
+
+
+@app.delete("/api/v1/schedules/{schedule_id}")
+def api_delete_schedule(schedule_id: int, session: Session = Depends(get_session)):
+    if not schedules.delete_schedule(session, schedule_id):
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return {"deleted": True, "schedule_id": schedule_id}
+
+
+@app.post("/api/v1/schedules/{schedule_id}/run")
+def api_run_schedule(
+    schedule_id: int,
+    force: bool = False,
+    session: Session = Depends(get_session),
+):
+    schedule = schedules.get_schedule(session, schedule_id)
+    if schedule is None:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return schedules.run_schedule(session, schedule, force=force)
+
+
+@app.get("/api/v1/parsers")
+def api_parsers():
+    """Built-in and local parser catalog; local plugins are optional."""
+    from .parsers import parser_catalog
+    from .parsers.sdk import default_parser_dir, plugin_errors
+
+    catalog = parser_catalog()
+    return {
+        "version": __version__,
+        "directory": str(default_parser_dir()),
+        "count": len(catalog),
+        "parsers": catalog,
+        "errors": plugin_errors(),
+    }
+
+
 @app.post("/api/v1/pastes", status_code=201)
-async def api_create_paste(request: Request, session: Session = Depends(get_session)):
+async def api_create_paste(
+    request: Request,
+    response: Response,
+    session: Session = Depends(get_session),
+):
     """Ingest raw tool output as JSON or raw bytes.
 
+    Idempotency: send ``capture_key`` in JSON, or an ``Idempotency-Key`` header
+    for a raw pipeline. A duplicate returns HTTP 200 with ``duplicate: true``
+    and the original capture id; a new capture returns HTTP 201. The same key
+    can be retried safely after a timeout.
+
     curl -X POST /api/v1/pastes -H 'Content-Type: application/json' \\
-      -d '{"text": "...", "program_id": 1}'
-    subfinder -d target.com -silent | curl -X POST /api/v1/pastes --data-binary @-
+      -d '{"text": "...", "program_id": 1, "capture_key": "subfinder:2026-11-11"}'
+    subfinder -d target.com -silent \\
+      | curl -X POST /api/v1/pastes -H 'Idempotency-Key: subfinder:acme:01' \\
+             --data-binary @-
     """
     content_type = request.headers.get("content-type", "")
     program_id = target_id = None
-    source = "api"
+    source = request.headers.get("x-breadcrumb-source", "api") or "api"
     command = None
     source_meta: dict = {}
+    capture_key = request.headers.get("idempotency-key") or None
     max_entities = MAX_ENTITIES_PER_PASTE
     if "application/json" in content_type:
         try:
             payload = await request.json()
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid JSON")
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="JSON body must be an object")
         text = payload.get("text", "") or ""
-        program_id = payload.get("program_id")
-        target_id = payload.get("target_id")
+        program_id = _api_optional_int(payload.get("program_id"), "program_id")
+        target_id = _api_optional_int(payload.get("target_id"), "target_id")
         source = payload.get("source", "api") or "api"
         command = payload.get("command") or None
         source_meta = payload.get("source_meta") or {}
+        capture_key = payload.get("capture_key") or capture_key
         try:
             max_entities = max(1, int(payload.get("max_entities") or MAX_ENTITIES_PER_PASTE))
         except (TypeError, ValueError):
@@ -3052,21 +3372,39 @@ async def api_create_paste(request: Request, session: Session = Depends(get_sess
         if len(raw) > MAX_UPLOAD_BYTES:
             raise HTTPException(status_code=413, detail="Body too large (max 5 MB)")
         text = raw.decode("utf-8", errors="replace")
-    if not text.strip():
+    if not str(text).strip():
         raise HTTPException(status_code=400, detail="Empty body")
-    paste = _ingest(
+    if capture_key is not None:
+        capture_key = str(capture_key).strip()
+        if not capture_key:
+            capture_key = None
+        elif len(capture_key) > 200:
+            raise HTTPException(
+                status_code=400, detail="capture_key must be 200 characters or fewer"
+            )
+    if not isinstance(source_meta, dict):
+        raise HTTPException(status_code=400, detail="source_meta must be an object")
+    _api_validate_links(session, program_id, target_id)
+    result = ingest_mod.ingest(
         session,
-        text,
-        program_id,
-        target_id,
-        source,
-        command=command,
-        source_meta=source_meta if isinstance(source_meta, dict) else {},
-        max_entities=max_entities,
+        ingest_mod.IngestRequest(
+            text=text,
+            program_id=program_id,
+            target_id=target_id,
+            source=str(source),
+            capture_key=capture_key,
+            command=command,
+            source_meta=source_meta,
+            max_entities=max_entities,
+        ),
     )
-    report = ingest_mod.import_report(session, paste)
+    paste = result.paste
+    report = result.report or ingest_mod.import_report(session, paste)
+    response.status_code = 200 if result.duplicate else 201
     return {
         "paste_id": paste.id,
+        "duplicate": result.duplicate,
+        "capture_key": paste.capture_key,
         "entities": report["entities"],
         "parsers": paste.parsers or [],
         "errors": paste.parse_errors or [],
@@ -3077,6 +3415,105 @@ async def api_create_paste(request: Request, session: Session = Depends(get_sess
         "parser_versions": report["parser_versions"],
         "report_url": f"/api/v1/pastes/{paste.id}/report",
         "manifest_url": f"/api/v1/pastes/{paste.id}/manifest",
+    }
+
+
+@app.post("/api/v1/pastes/bulk", status_code=207)
+def api_bulk_pastes(
+    payload: dict = Body(...), session: Session = Depends(get_session)
+):
+    """Bounded bulk ingest for CI and multi-file tool wrappers.
+
+    ``{"captures": [{"filename": "httpx.jsonl", "text": "...",
+                     "capture_key": "...", "source_meta": {...}}]}``
+
+    Each capture is independent. A bad item does not roll back the others; the
+    response is 207 with per-item status. Limit: 100 captures per request.
+    """
+    items = payload.get("captures") if isinstance(payload, dict) else None
+    if not isinstance(items, list) or not items:
+        raise HTTPException(status_code=400, detail="captures must be a non-empty list")
+    if len(items) > 100:
+        raise HTTPException(status_code=400, detail="at most 100 captures per request")
+    results = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            results.append({"index": index, "ok": False, "error": "item must be an object"})
+            continue
+        text = item.get("text") or ""
+        if not str(text).strip():
+            results.append({"index": index, "ok": False, "error": "empty text"})
+            continue
+        capture_key = item.get("capture_key")
+        if capture_key is not None:
+            capture_key = str(capture_key).strip()
+            if not capture_key:
+                capture_key = None
+            elif len(capture_key) > 200:
+                results.append(
+                    {"index": index, "ok": False, "error": "capture_key too long"}
+                )
+                continue
+        source_meta = item.get("source_meta") or {}
+        if not isinstance(source_meta, dict):
+            results.append(
+                {"index": index, "ok": False, "error": "source_meta must be an object"}
+            )
+            continue
+        if item.get("filename"):
+            source_meta = {**source_meta, "filename": str(item["filename"])[:200]}
+        try:
+            program_id = _api_optional_int(
+                item.get("program_id", payload.get("program_id")), "program_id"
+            )
+            target_id = _api_optional_int(
+                item.get("target_id", payload.get("target_id")), "target_id"
+            )
+            _api_validate_links(session, program_id, target_id)
+            max_entities = max(
+                1,
+                int(
+                    item.get("max_entities")
+                    or payload.get("max_entities")
+                    or MAX_ENTITIES_PER_PASTE
+                ),
+            )
+            result = ingest_mod.ingest(
+                session,
+                ingest_mod.IngestRequest(
+                    text=text,
+                    program_id=program_id,
+                    target_id=target_id,
+                    source=str(item.get("source") or payload.get("source") or "api-bulk"),
+                    capture_key=capture_key,
+                    command=item.get("command") or None,
+                    source_meta=source_meta,
+                    max_entities=max_entities,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001  (per-item isolation is the contract)
+            session.rollback()
+            results.append({"index": index, "ok": False, "error": str(exc)[:300]})
+            continue
+        report = result.report or ingest_mod.import_report(session, result.paste)
+        results.append(
+            {
+                "index": index,
+                "ok": True,
+                "duplicate": result.duplicate,
+                "paste_id": result.paste.id,
+                "capture_key": result.paste.capture_key,
+                "entities": report["entities"],
+                "findings": report["findings"],
+                "completeness": report["completeness"],
+                "warning": report["warning"],
+            }
+        )
+    return {
+        "count": len(results),
+        "ok": sum(1 for item in results if item.get("ok")),
+        "failed": sum(1 for item in results if not item.get("ok")),
+        "results": results,
     }
 
 
@@ -3238,23 +3675,57 @@ def api_entities_bulk(payload: dict = Body(...), session: Session = Depends(get_
 def api_findings(
     program_id: int | None = None,
     min_severity: str = "",
+    status: str = "",
+    q: str = "",
+    limit: int = 500,
+    offset: int = 0,
     session: Session = Depends(get_session),
 ):
+    """Paginated finding list for scripts and dashboards.
+
+    ``next_offset`` is absent when the page is the last one. Filters are
+    additive; severity ranking uses the same order as the UI and CI gate.
+    """
     stmt = select(Finding).order_by(Finding.id)
     if program_id is not None:
         stmt = stmt.where(Finding.program_id == program_id)
+    if status.strip():
+        stmt = stmt.where(Finding.status == status.strip())
+    if q.strip():
+        stmt = stmt.where(Finding.title.ilike(f"%{q.strip()}%"))
     rows = session.exec(stmt).all()
     floor = notify.SEVERITY_RANK.get(min_severity.lower()) if min_severity else None
-    out = []
-    for f in rows:
-        if floor is not None and notify.SEVERITY_RANK.get(f.severity, 0) < floor:
-            continue
-        out.append({
-            "id": f.id, "program_id": f.program_id, "title": f.title,
-            "severity": f.severity, "status": f.status, "cvss": f.cvss,
-            "tags": f.tags or [], "target_id": f.target_id,
-        })
-    return {"count": len(out), "findings": out}
+    filtered = [
+        f
+        for f in rows
+        if floor is None or notify.SEVERITY_RANK.get(f.severity, 0) >= floor
+    ]
+    page_size = max(1, min(int(limit or 500), 5000))
+    page_offset = max(0, int(offset or 0))
+    page = filtered[page_offset : page_offset + page_size]
+    out = [
+        {
+            "id": f.id,
+            "program_id": f.program_id,
+            "title": f.title,
+            "severity": f.severity,
+            "status": f.status,
+            "cvss": f.cvss,
+            "tags": f.tags or [],
+            "target_id": f.target_id,
+            "paste_id": f.paste_id,
+        }
+        for f in page
+    ]
+    next_offset = page_offset + len(page)
+    return {
+        "count": len(out),
+        "total": len(filtered),
+        "offset": page_offset,
+        "limit": page_size,
+        "next_offset": next_offset if next_offset < len(filtered) else None,
+        "findings": out,
+    }
 
 
 @app.get("/api/v1/gate")

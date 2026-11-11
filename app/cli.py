@@ -1418,6 +1418,202 @@ def cmd_report_templates(args) -> int:  # noqa: ARG001
     return 0
 
 
+def cmd_parsers(args) -> int:
+    """List built-in and local parser plugins, plus load errors."""
+    from .parsers import parser_catalog
+    from .parsers.sdk import default_parser_dir, plugin_errors
+
+    catalog = parser_catalog()
+    errors = plugin_errors()
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "directory": str(default_parser_dir()),
+                    "parsers": catalog,
+                    "errors": errors,
+                },
+                indent=2,
+            )
+        )
+        return 0 if not errors else 1
+    local = [item for item in catalog if item.get("source") == "local"]
+    print(f"parser directory: {default_parser_dir()} (optional)")
+    print(f"{len(catalog)} parser(s), {len(local)} local plugin(s)")
+    for item in catalog:
+        source = "local" if item.get("source") == "local" else "builtin"
+        print(f"  {item['name']:<18} {source:<8} v{item.get('version', '1')}  {item.get('description', '')}")
+    if errors:
+        print("\nplugin errors:")
+        for error in errors:
+            print(f"  {error['path']}: {error['error']}")
+        return 1
+    return 0
+
+
+def _schedule_ref(session, ref: str):
+    from .models import Schedule
+
+    text = str(ref or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        schedule = session.get(Schedule, int(text))
+        if schedule is not None:
+            return schedule
+    return session.exec(select(Schedule).where(Schedule.name == text)).first()
+
+
+def cmd_schedule(args) -> int:
+    """Manage local folder schedules (add/list/show/run/enable/disable/delete)."""
+    from . import schedules as schedules_mod
+
+    init_db()
+    action = args.action
+    with Session(engine) as session:
+        if action == "add":
+            try:
+                schedule = schedules_mod.create_schedule(
+                    session,
+                    args.name,
+                    args.folder,
+                    program_id=args.program,
+                    target_id=args.target,
+                    interval_seconds=args.interval,
+                    overlap_policy=args.overlap,
+                    move_processed=not args.no_move,
+                    enabled=not args.disabled,
+                )
+            except ValueError as exc:
+                print(f"schedule: {exc}", file=sys.stderr)
+                return 2
+            print(
+                f"created schedule #{schedule.id} {schedule.name!r} "
+                f"-> {schedule.source} every {schedule.interval_seconds}s"
+            )
+            return 0
+
+        if action == "list":
+            rows = schedules_mod.list_schedules(session)
+            if args.json:
+                print(
+                    json.dumps(
+                        {
+                            "count": len(rows),
+                            "schedules": [
+                                schedules_mod.schedule_dict(item) for item in rows
+                            ],
+                        },
+                        indent=2,
+                    )
+                )
+                return 0
+            if not rows:
+                print("no schedules")
+                return 0
+            for schedule in rows:
+                state = "on" if schedule.enabled else "off"
+                print(
+                    f"{schedule.id:>3}  {schedule.name:<24} {state:<3} "
+                    f"{schedule.last_status:<8} every {schedule.interval_seconds}s  "
+                    f"{schedule.source}"
+                )
+            return 0
+
+        schedule = _schedule_ref(session, args.ref) if getattr(args, "ref", "") else None
+        if action in ("show", "run", "enable", "disable", "delete") and schedule is None:
+            print(f"schedule: {args.ref!r} not found", file=sys.stderr)
+            return 1
+
+        if action == "show":
+            data = schedules_mod.schedule_dict(schedule)
+            runs = schedules_mod.list_runs(session, schedule.id, limit=args.limit)
+            if args.json:
+                data["runs"] = [
+                    schedules_mod.run_dict(run) for run in runs
+                ]
+                print(json.dumps(data, indent=2, default=str))
+                return 0
+            print(f"schedule #{schedule.id}: {schedule.name}")
+            print(f"  folder:   {schedule.source}")
+            print(
+                f"  every:    {schedule.interval_seconds}s  "
+                f"overlap={schedule.overlap_policy}  "
+                f"move_processed={bool(schedule.move_processed)}"
+            )
+            print(
+                f"  program:  {schedule.program_id or 'unassigned'}  "
+                f"target: {schedule.target_id or '—'}"
+            )
+            print(
+                f"  enabled:  {bool(schedule.enabled)}  status: {schedule.last_status}  "
+                f"runs: {schedule.run_count}"
+            )
+            print(f"  next:     {schedule.next_run_at or '—'}")
+            if schedule.last_error:
+                print(f"  error:    {schedule.last_error}")
+            print("  recent runs:")
+            for run in runs:
+                print(
+                    f"    #{run.id:<4} {run.status:<8} "
+                    f"{run.files_seen} seen / {run.files_ingested} new / "
+                    f"{run.entities} entities / {run.findings} findings"
+                    + (f"  error: {run.error}" if run.error else "")
+                )
+            return 0
+
+        if action == "run":
+            result = schedules_mod.run_schedule(session, schedule.id, force=args.force)
+            if args.json:
+                print(json.dumps(result, indent=2, default=str))
+            else:
+                print(
+                    f"run {result.get('status')}: "
+                    f"{result.get('files_seen', 0)} seen, "
+                    f"{result.get('files_ingested', 0)} new capture(s), "
+                    f"{result.get('entities', 0)} entities, "
+                    f"{result.get('findings', 0)} findings"
+                )
+                if result.get("error"):
+                    print(f"  error: {result['error']}", file=sys.stderr)
+            return 0 if result.get("status") in ("ok", "partial") else 1
+
+        if action in ("enable", "disable"):
+            enabled = action == "enable"
+            schedules_mod.update_schedule(session, schedule.id, enabled=enabled)
+            print(f"schedule {schedule.name!r} {'enabled' if enabled else 'disabled'}")
+            return 0
+
+        if action == "delete":
+            if not args.yes:
+                print(
+                    f"schedule: refusing to delete {schedule.name!r} without --yes",
+                    file=sys.stderr,
+                )
+                return 2
+            schedules_mod.delete_schedule(session, schedule.id)
+            print(f"deleted schedule #{schedule.id} {schedule.name!r}")
+            return 0
+    return 2
+
+
+def cmd_scheduler(args) -> int:
+    """Run due schedules. One process, local only; no daemon is installed."""
+    from . import schedules as schedules_mod
+
+    try:
+        executed = schedules_mod.run_forever(
+            once=args.once,
+            poll_interval=max(1.0, args.poll),
+            max_runs=max(0, args.max_runs),
+        )
+    except KeyboardInterrupt:
+        print("\nscheduler interrupted")
+        return 0
+    print(f"scheduler: {executed} run(s) executed")
+    return 0
+
+
 def cmd_version(args) -> int:  # noqa: ARG001
     print(f"breadcrumb {__version__}")
     return 0
@@ -1504,6 +1700,48 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--interval", type=float, default=5.0)
     p.add_argument("--once", action="store_true", help="sweep once and exit")
     p.set_defaults(func=cmd_watch)
+
+    p = sub.add_parser("schedule", help="manage local folder re-import schedules")
+    schedule_sub = p.add_subparsers(dest="action", required=True)
+    add = schedule_sub.add_parser("add", help="create a folder schedule")
+    add.add_argument("name")
+    add.add_argument("folder")
+    add.add_argument("--program", type=int, default=None)
+    add.add_argument("--target", type=int, default=None)
+    add.add_argument("--interval", type=int, default=300, help="seconds between runs")
+    add.add_argument("--overlap", choices=["skip", "queue"], default="skip")
+    add.add_argument("--no-move", action="store_true", help="leave files in place")
+    add.add_argument("--disabled", action="store_true", help="create it switched off")
+    listing = schedule_sub.add_parser("list", help="list schedules")
+    listing.add_argument("--json", action="store_true")
+    show = schedule_sub.add_parser("show", help="show one schedule and its run history")
+    show.add_argument("ref", help="schedule id or name")
+    show.add_argument("--limit", type=int, default=20)
+    show.add_argument("--json", action="store_true")
+    run = schedule_sub.add_parser("run", help="run one schedule now")
+    run.add_argument("ref", help="schedule id or name")
+    run.add_argument("--force", action="store_true", help="ignore a recent running row")
+    run.add_argument("--json", action="store_true")
+    for action, help_text in (
+        ("enable", "enable a schedule"),
+        ("disable", "disable a schedule"),
+        ("delete", "delete a schedule and its run history"),
+    ):
+        child = schedule_sub.add_parser(action, help=help_text)
+        child.add_argument("ref", help="schedule id or name")
+        if action == "delete":
+            child.add_argument("--yes", action="store_true", help="confirm deletion")
+    p.set_defaults(func=cmd_schedule)
+
+    p = sub.add_parser("scheduler", help="run due schedules in the foreground")
+    p.add_argument("--once", action="store_true", help="check due schedules once and exit")
+    p.add_argument("--poll", type=float, default=30.0, help="idle poll interval (seconds)")
+    p.add_argument("--max-runs", type=int, default=0, help="stop after N runs (0 = forever)")
+    p.set_defaults(func=cmd_scheduler)
+
+    p = sub.add_parser("parsers", help="list built-in and local parser plugins")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_parsers)
 
     p = sub.add_parser("worker", help="run the native/adapter worker")
     p.add_argument("--once", action="store_true", help="claim at most one job and exit")

@@ -369,3 +369,52 @@ class SavedView(SQLModel, table=True):
     params: dict = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class Schedule(SQLModel, table=True):
+    """A local, unattended re-import schedule (Phase D).
+
+    The only supported source in 1.x is a local drop folder. URL/API pulls are
+    deliberately not implemented in the core because they add SSRF and
+    credential-storage risk without a scope boundary; an external fetch can
+    still drop a file into the folder. Schedules are additive: they reuse the
+    normal ingest path, capture keys and evidence chain.
+    """
+
+    __tablename__ = "schedule"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(index=True, unique=True)
+    kind: str = Field(default="folder", index=True)
+    source: str = Field(default="", sa_column=Column(Text))
+    program_id: Optional[int] = Field(default=None, foreign_key="program.id", index=True)
+    target_id: Optional[int] = Field(default=None, foreign_key="target.id")
+    interval_seconds: int = 300
+    overlap_policy: str = "skip"  # skip | queue
+    move_processed: bool = True
+    enabled: bool = Field(default=True, index=True)
+    last_run_at: Optional[datetime] = None
+    next_run_at: Optional[datetime] = Field(default=None, index=True)
+    last_status: str = "never"
+    last_error: Optional[str] = Field(default=None, sa_column=Column(Text))
+    run_count: int = 0
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class ScheduleRun(SQLModel, table=True):
+    """One execution record for a schedule (Phase D run history)."""
+
+    __tablename__ = "schedulerun"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    schedule_id: int = Field(index=True)
+    started_at: datetime = Field(default_factory=_utcnow)
+    finished_at: Optional[datetime] = None
+    status: str = Field(default="running", index=True)
+    files_seen: int = 0
+    files_ingested: int = 0
+    entities: int = 0
+    findings: int = 0
+    error: Optional[str] = Field(default=None, sa_column=Column(Text))
+    detail: dict = Field(default_factory=dict, sa_column=Column(JSON))

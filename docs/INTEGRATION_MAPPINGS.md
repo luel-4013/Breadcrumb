@@ -70,7 +70,7 @@ author, engagement reference or a single-finding report.
 {
   "name": "Breadcrumb — Acme",
   "type": "Generic Findings Import",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "findings": [
     {
       "title": "Exposed admin panel",
@@ -167,7 +167,7 @@ performs or claims automatically.
 {
   "format": "breadcrumb.ghostwriter",
   "format_version": 1,
-  "generator": {"name": "breadcrumb", "version": "0.7.0"},
+  "generator": {"name": "breadcrumb", "version": "0.8.0"},
   "project": {
     "name": "Acme",
     "platform": "hackerone",

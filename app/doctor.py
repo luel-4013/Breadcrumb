@@ -274,17 +274,32 @@ def _check_port() -> dict:
 
 def _check_parsers() -> dict:
     from .parsers import REGISTRY, load_all, parser_catalog
+    from .parsers.sdk import default_parser_dir, plugin_errors
 
     try:
         load_all()
     except Exception as exc:  # noqa: BLE001
         return _check("parsers", "fail", f"parser registry failed: {exc}", "Reinstall requirements.")
-    names = sorted(item["name"] for item in parser_catalog())
+    catalog = parser_catalog()
+    names = sorted(item["name"] for item in catalog)
+    local = [item for item in catalog if item.get("source") == "local"]
+    errors = plugin_errors()
+    detail = (
+        f"{len(REGISTRY)} parser(s): {', '.join(names)}; "
+        f"{len(local)} local plugin(s) from {default_parser_dir()}"
+    )
+    if errors:
+        detail += f"; {len(errors)} plugin error(s)"
+    fix = ""
+    if errors:
+        fix = "Fix or remove the failing file in the local parser directory; see /parsers."
+    elif len(REGISTRY) < 20:
+        fix = "The parser registry is smaller than expected."
     return _check(
         "parsers",
-        "ok" if len(REGISTRY) >= 20 else "warn",
-        f"{len(REGISTRY)} parser(s): {', '.join(names)}",
-        "" if len(REGISTRY) >= 20 else "The parser registry is smaller than expected.",
+        "warn" if errors or len(REGISTRY) < 20 else "ok",
+        detail,
+        fix,
     )
 
 

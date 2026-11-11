@@ -32,3 +32,36 @@ def test_import_benchmark_reports_completeness():
     assert payload["skipped_rows"] == 0
     assert payload["parsed_entities"] >= 1000
     assert payload["entities_per_second"] > 0
+
+
+def test_scale_benchmark_reports_read_paths():
+    env = dict(os.environ)
+    env.update(BREADCRUMB_SKIP_BACKUP="1", PYTHONPATH=str(ROOT))
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "bench_scale.py"),
+            "--entities",
+            "1000",
+            "--json",
+        ],
+        cwd=str(ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["entities"] == 1000
+    assert payload["within_target"] is True
+    labels = {item["label"] for item in payload["measurements"]}
+    assert labels == {
+        "ledger_filtered",
+        "ledger_deep_page",
+        "ledger_search",
+        "entity_filtered",
+    }
+    for item in payload["measurements"]:
+        assert item["seconds"] >= 0
+    assert payload["query_plans"]

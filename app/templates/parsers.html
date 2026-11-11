@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Parsers · Breadcrumb{% endblock %}
+{% block crumb %}Parsers{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>Parser registry</h2>
+  <p class="muted">
+    Import is the trust boundary. Breadcrumb ships {{ catalog|length }} parsers
+    and can load additional <strong>local</strong> parser plugins from a folder
+    you control. There is no remote marketplace and no auto-update.
+  </p>
+  <p class="dim">
+    Plugin directory: <code>{{ plugin_directory }}</code> (override with
+    <code>BREADCRUMB_PARSER_DIR</code>). A plugin is imported Python and runs
+    with your user's permissions, so only install code you trust.
+  </p>
+  <p class="muted">
+    A module exposes <code>PARSER</code> (a <code>Parser</code> instance or
+    class) or <code>get_parser()</code>, with a unique non-empty
+    <code>name</code>. Invalid plugins are skipped and listed below; they never
+    stop the app from starting. The repository's
+    <code>docs/PARSER_AUTHORING.md</code> documents the full contract.
+  </p>
+</section>
+
+{% if errors %}
+<section class="card">
+  <h2>Plugin load errors</h2>
+  <div class="warn-box">These files were not loaded. Fix the error or remove the file, then restart Breadcrumb.</div>
+  <table>
+    <thead><tr><th>File</th><th>Error</th></tr></thead>
+    <tbody>
+      {% for e in errors %}
+      <tr><td class="mono">{{ e.path }}</td><td class="mono">{{ e.error }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Available parsers</h2>
+  <table>
+    <thead><tr><th>Name</th><th>Source</th><th>Version</th><th>Description</th><th>Path</th></tr></thead>
+    <tbody>
+      {% for p in catalog %}
+      <tr>
+        <td class="mono"><strong>{{ p.name }}</strong></td>
+        <td><span class="badge {{ 'seen' if p.source == 'local' else '' }}">{{ p.source }}</span></td>
+        <td class="mono">{{ p.version }}</td>
+        <td class="muted">{{ p.description }}</td>
+        <td class="dim mono">{{ p.path or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>Minimal plugin</h2>
+  <pre class="raw">from app.parsers.base import Entity, ParseResult, Parser
+
+class ExampleParser(Parser):
+    name = "example_scanner"
+    description = "Example scanner JSONL"
+    parser_version = "1"
+
+    def detect(self, text: str) -&gt; float:
+        return 0.9 if '"example_scan"' in text else 0.0
+
+    def parse_detailed(self, text: str) -&gt; ParseResult:
+        result = ParseResult(parser_version=self.parser_version)
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            result.entities.append(Entity(type="domain", value=line.strip()))
+        return result
+
+PARSER = ExampleParser()</pre>
+  <p class="dim">
+    Run <code>breadcrumb parsers</code> to list the registry,
+    <code>breadcrumb parsers --json</code> for automation. Analysis through
+    <code>breadcrumb ingest</code> and <code>POST /api/v1/pastes</code> picks up
+    local plugins automatically.
+  </p>
+</section>
+{% endblock %}

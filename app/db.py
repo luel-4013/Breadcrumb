@@ -14,7 +14,7 @@ DB_PATH = Path(
 # Bump when a migration changes the on-disk contract. The value is recorded in
 # appstate so backups/restores and future migrations can be versioned
 # explicitly instead of inferred from column presence.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 engine = create_engine(
     f"sqlite:///{DB_PATH}",
@@ -132,6 +132,32 @@ MIGRATIONS = {
         "proxy": "TEXT DEFAULT ''",
         "rate_limit": "FLOAT DEFAULT 0.0",
     },
+    "schedule": {
+        "kind": "TEXT DEFAULT 'folder'",
+        "source": "TEXT DEFAULT ''",
+        "program_id": "INTEGER",
+        "target_id": "INTEGER",
+        "interval_seconds": "INTEGER DEFAULT 300",
+        "overlap_policy": "TEXT DEFAULT 'skip'",
+        "move_processed": "INTEGER DEFAULT 1",
+        "enabled": "INTEGER DEFAULT 1",
+        "last_run_at": "DATETIME",
+        "next_run_at": "DATETIME",
+        "last_status": "TEXT DEFAULT 'never'",
+        "last_error": "TEXT",
+        "run_count": "INTEGER DEFAULT 0",
+        "updated_at": "DATETIME",
+    },
+    "schedulerun": {
+        "finished_at": "DATETIME",
+        "status": "TEXT DEFAULT 'running'",
+        "files_seen": "INTEGER DEFAULT 0",
+        "files_ingested": "INTEGER DEFAULT 0",
+        "entities": "INTEGER DEFAULT 0",
+        "findings": "INTEGER DEFAULT 0",
+        "error": "TEXT",
+        "detail": "TEXT DEFAULT '{}'",
+    },
 }
 
 # Indexes for the queries the UI/API run on every page. Created idempotently
@@ -164,6 +190,10 @@ INDEXES = [
     ("ix_scansnapshot_target", "scansnapshot (target_id, id)"),
     ("ix_scansnapshot_program", "scansnapshot (program_id, id)"),
     ("ix_savedview_kind_name", "savedview (kind, name)"),
+    ("ix_schedule_due", "schedule (enabled, next_run_at)"),
+    ("ix_schedule_program", "schedule (program_id)"),
+    ("ix_schedulerun_schedule", "schedulerun (schedule_id, id)"),
+    ("ix_schedulerun_status", "schedulerun (status)"),
 ]
 
 # A linear hash chain means each capture has at most one successor. These

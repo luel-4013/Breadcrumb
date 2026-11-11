@@ -204,13 +204,20 @@ def extract_findings(text: str) -> list[dict]:
 
 
 def parser_catalog() -> list[dict]:
-    """Metadata for docs, doctor and the parser SDK UI."""
+    """Metadata for docs, doctor and the parser SDK UI.
+
+    ``source`` is ``builtin`` or ``local``. Local parser metadata is additive;
+    the analysis pipeline and the parser contract are unchanged.
+    """
     load_all()
     return [
         {
             "name": parser.name,
             "description": parser.description,
             "version": getattr(parser, "parser_version", "1"),
+            "source": "local" if getattr(parser, "plugin_path", None) else "builtin",
+            "path": str(getattr(parser, "plugin_path", "") or ""),
+            "meta": dict(getattr(parser, "plugin_meta", {}) or {}),
         }
         for parser in sorted(REGISTRY, key=lambda item: item.name)
     ]

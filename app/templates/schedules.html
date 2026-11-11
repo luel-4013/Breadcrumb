@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}Schedules · Breadcrumb{% endblock %}
+{% block crumb %}Schedules{% endblock %}
+
+{% block content %}
+{% if request.query_params.get('msg') %}<div class="warn-box">{{ request.query_params.get('msg') }}</div>{% endif %}
+
+<section class="card">
+  <h2>Local re-import schedules</h2>
+  <p class="muted">
+    A schedule watches one <strong>local folder</strong> and imports new files
+    through the normal capture path. There is no URL fetch, no cloud scheduler
+    and no daemon installed by default: run <code>breadcrumb scheduler</code> in
+    the foreground, or call <code>breadcrumb schedule run &lt;name&gt;</code>
+    from cron/Task Scheduler. Identical bytes are deduplicated by content hash.
+  </p>
+  <p class="dim">
+    Files are read as text. Successful imports move to <code>processed/</code>
+    when that option is on; failed reads/ingests stay in place. Binary files,
+    hidden files and files larger than 25 MB are skipped and reported.
+  </p>
+</section>
+
+<section class="card">
+  <h2>Add a schedule</h2>
+  <form method="post" action="/schedules" class="stack" style="max-width:760px">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+    <div class="row">
+      <input name="name" placeholder="Name (e.g. acme-nightly)" required style="flex:1">
+      <input name="source" placeholder="/home/me/recon/acme/drop" required class="mono" style="flex:2">
+    </div>
+    <div class="row">
+      <label class="row" style="gap:6px">
+        Program
+        <select name="program_id">
+          <option value="">(unassigned)</option>
+          {% for p in programs %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
+        </select>
+      </label>
+      <label class="row" style="gap:6px">
+        Every
+        <input name="interval_seconds" type="number" min="10" value="300" style="width:100px"> seconds
+      </label>
+      <label class="row" style="gap:6px">
+        Overlap
+        <select name="overlap_policy">
+          <option value="skip">skip</option>
+          <option value="queue">queue</option>
+        </select>
+      </label>
+      <label class="row" style="gap:6px"><input type="checkbox" name="move_processed" value="on" checked> move to processed/</label>
+      <label class="row" style="gap:6px"><input type="checkbox" name="enabled" value="on" checked> enabled</label>
+      <button class="primary" type="submit">Create schedule</button>
+    </div>
+  </form>
+  <p class="dim">
+    <strong>skip</strong> refuses to start while a recent run is still marked
+    running. <strong>queue</strong> starts anyway; content-hash capture keys keep
+    the import idempotent. Use <code>schedule run --force</code> only to recover
+    from a crashed process.
+  </p>
+</section>
+
+<section class="card">
+  <h2>Schedules</h2>
+  {% if schedules %}
+  <table>
+    <thead>
+      <tr><th>Name</th><th>Folder</th><th>Program</th><th>Every</th><th>State</th><th>Last run</th><th>Next</th></tr>
+    </thead>
+    <tbody>
+      {% for s in schedules %}
+      <tr>
+        <td><a href="/schedules/{{ s.id }}"><strong>{{ s.name }}</strong></a><div class="dim mono">#{{ s.id }}</div></td>
+        <td class="mono">{{ s.source }}</td>
+        <td>{{ program_names.get(s.program_id, '—') if s.program_id else '—' }}</td>
+        <td>{{ s.interval_seconds }}s</td>
+        <td>
+          <span class="badge {{ 'st-done' if s.enabled else '' }}">{{ 'enabled' if s.enabled else 'disabled' }}</span>
+          <span class="chip">{{ s.last_status }}</span>
+        </td>
+        <td class="dim">{{ (s.last_run_at or '—')[:16].replace('T', ' ') }}</td>
+        <td class="dim">{{ (s.next_run_at or '—')[:16].replace('T', ' ') }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No schedules yet. Add one above, or run <code>breadcrumb schedule add</code>.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Recent runs</h2>
+  {% if runs %}
+  <table>
+    <thead><tr><th>Run</th><th>Schedule</th><th>Status</th><th>Seen</th><th>New</th><th>Entities</th><th>Findings</th><th>Started</th></tr></thead>
+    <tbody>
+      {% for r in runs %}
+      <tr>
+        <td><a href="/schedules/{{ r.schedule_id }}">#{{ r.id }}</a></td>
+        <td class="mono">{{ r.schedule_id }}</td>
+        <td><span class="badge">{{ r.status }}</span>{% if r.error %}<div class="dim">{{ r.error }}</div>{% endif %}</td>
+        <td>{{ r.files_seen }}</td>
+        <td>{{ r.files_ingested }}</td>
+        <td>{{ r.entities }}</td>
+        <td>{{ r.findings }}</td>
+        <td class="dim">{{ (r.started_at or '')[:19].replace('T', ' ') }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No runs recorded yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

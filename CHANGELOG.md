@@ -5,7 +5,98 @@ All notable changes to Breadcrumb are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The Leadline merge is the **0.4.0** release; **0.5.0** is the Phase A “Proof”
 release; **0.6.0** is the Phase B “Memory” release; **0.7.0** is the Phase C
-“Report” release. The version in `app/__init__.py` is `0.7.0`.
+“Report” release; **0.8.0** is the Phase D “Automate” release. The version in
+`app/__init__.py` is `0.8.0`.
+
+## [0.8.0] — 2026-11-11
+
+Phase D makes Breadcrumb a dependable automation target without turning it into
+a platform: local folder schedules with honest run history, a local parser SDK,
+idempotent/bulk/paginated API automation, and measured 100k-import/1M-read
+performance. Schema **7** adds two tables; no cloud service, daemon, token
+system or remote plugin registry is required.
+
+### Added — scheduled folder re-import
+
+- `app/schedules.py` and schema 7 (`Schedule`, `ScheduleRun`): one local folder,
+  one interval, and the normal ingest path. No URL/API pull is implemented;
+  an external fetch tool drops a file instead, avoiding SSRF and credential
+  storage in the core.
+- Run history with `ok` / `partial` / `error` / `skipped`, per-file detail,
+  last error, next run and notification hook. A crashed `running` row becomes
+  `stale` after `max(3600, interval × 2)` seconds.
+- Content-hash capture keys namespaced by schedule id, so re-dropping identical
+  bytes is a duplicate capture. Successful/empty files move to `processed/`
+  (collision-safe); failed files stay in place. Guardrails: 200 files/run,
+  25 MB/file, binary/hidden/partial-download handling.
+- `skip` and `queue` overlap policies; disabled schedules are never due;
+  enabling starts from now rather than replaying missed runs.
+- Web: `/schedules`, `/schedules/<id>` with create/edit/run/force/enable/
+  disable/delete. API: `GET/POST /api/v1/schedules`, `GET/PATCH/DELETE
+  /api/v1/schedules/<id>`, `POST /api/v1/schedules/<id>/run`.
+- CLI: `schedule add/list/show/run/enable/disable/delete`, plus
+  `scheduler --once/--poll/--max-runs` for cron/systemd/timers.
+
+### Added — local parser SDK
+
+- `app/parsers/sdk.py` loads local parsers from `$BREADCRUMB_PARSER_DIR` or
+  `~/.breadcrumb/parsers`. Modules expose `PARSER` or `get_parser()`, subclass
+  `Parser`, and are validated for a unique name, required methods and version.
+- Broken or duplicate-name plugins are recorded and skipped; they never stop
+  startup or affect built-in parsers. `breadcrumb parsers [--json]`,
+  `/parsers`, `/api/v1/parsers` and `breadcrumb doctor` show local plugins,
+  metadata and load errors.
+- No remote marketplace, package index, auto-update or sandbox. The docs state
+  the trust boundary: a plugin is imported Python with the user's permissions.
+- `parser_catalog()` now reports `source` (`builtin`/`local`), path and
+  metadata; the existing parser contract and `analyze()` wrapper are unchanged.
+
+### Added — API automation
+
+- `POST /api/v1/pastes` accepts `capture_key` in JSON or `Idempotency-Key` for
+  raw pipelines. New captures return **201**; duplicates return **200** with
+  `duplicate: true` and the original `paste_id`.
+- `POST /api/v1/pastes/bulk`: up to 100 captures, **207** response, per-item
+  isolation, shared or per-item program/target/source/max-entities fields.
+- `GET /api/v1/findings`: `program_id`, `min_severity`, `status`, `q`, `limit`
+  (cap 5000) and `offset`; returns `total`, `offset`, `limit` and
+  `next_offset` (null on the last page).
+- Paste APIs validate program/target ids and option types with 400 instead of
+  leaking a SQLite foreign-key 500.
+- CLI `parsers` and schedule commands documented with CI/cron recipes in
+  `docs/AUTOMATION_COOKBOOK.md`.
+
+### Performance
+
+- `scripts/bench_scale.py`: seeds a throwaway 1M-entity database and measures
+  Ledger aggregate/filter/search, entity filtering, deep pagination and
+  `EXPLAIN QUERY PLAN`; exits non-zero over `--target-seconds` (default 2 s).
+- Schema 7 read-path indexes: entity program/type/ignored/scope/status-code,
+  `lower(normalized)`, schedule due, schedule-run history/status.
+- Recorded 100k httpx import: 100,001 entities in 80.913 s (~1,236/s), 100%
+  completeness, 0 skipped, ~61 MB. Recorded 1M reads: filtered Ledger 0.760 s,
+  deep page 1.395 s, value search 0.771 s, entity filter 0.148 s — within the
+  documented 2 s target.
+- No FTS table was added because the measured substring search already meets
+  the target; the guide documents the trigger for revisiting that decision.
+
+### Docs
+
+- `docs/AUTOMATION_COOKBOOK.md`, `docs/PARSER_AUTHORING.md` and
+  `docs/PERFORMANCE_TUNING.md`; README route/CLI/API examples, docs index and
+  `tests/test_docs.py` guards updated.
+- `tests/test_benchmarks.py` now smoke-tests `bench_scale.py`; Phase D tests
+  cover schedules, overlap/stale handling, parser SDK isolation, idempotent and
+  bulk paste, findings pagination and the scheduler.
+
+### Compatibility
+
+- Schema **7** is additive from 6; startup backs up before migration. Existing
+  tags, routes, exports and the offline-first SQLite-only defaults are
+  unchanged.
+- The core executor remains off by default. Schedules are local reads only;
+  local parser plugins are opt-in and explicitly trusted.
+- Full suite: **249 passed, 1 warning**.
 
 ## [0.7.0] — 2026-11-11
 

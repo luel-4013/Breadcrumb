@@ -34,6 +34,12 @@
         <a href="/runners" class="{{ 'active' if path.startswith('/runners') or path.startswith('/jobs') else '' }}">
           <span class="ico">▶</span> Runners
         </a>
+        <a href="/schedules" class="{{ 'active' if path.startswith('/schedules') else '' }}">
+          <span class="ico">⏱</span> Schedules
+        </a>
+        <a href="/parsers" class="{{ 'active' if path.startswith('/parsers') else '' }}">
+          <span class="ico">◫</span> Parsers
+        </a>
         <a href="/pipeline" class="{{ 'active' if path.startswith('/pipeline') else '' }}">
           <span class="ico">⇄</span> Pipeline
         </a>
