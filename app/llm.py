@@ -159,12 +159,16 @@ CURATED_SUGGESTIONS = [
 # Update the date/list when the local collection changes.
 LOCAL_MODEL_NOTES = {
     "reviewed": "2026-11-12",
-    "hardware": "AMD Ryzen 5 5600H · 18 GB RAM · NVIDIA GTX 1650 4 GB VRAM",
+    "hardware": (
+        "AMD Ryzen 5 5600H laptop · 18 GB RAM · "
+        "NVIDIA GeForce GTX 1650 Laptop GPU, 4 GB VRAM"
+    ),
     "summary": (
-        "Snapshot of the Jan and LM Studio libraries on this PC. The GTX 1650 "
-        "has 4 GB of VRAM, so 3–4B Q4/Q5 models are the practical daily "
-        "drivers; larger models are batch/quality experiments or future-PC "
-        "targets. Task routing above is what Breadcrumb actually calls."
+        "Snapshot of the Jan and LM Studio libraries on this laptop. The "
+        "GTX 1650 Laptop GPU has 4 GB of VRAM, so 3–4B Q4/Q5 models are the "
+        "practical daily drivers; larger models are batch/quality experiments "
+        "or future-laptop targets. Task routing above is what Breadcrumb "
+        "actually calls."
     ),
     "models": [
         {
@@ -281,76 +285,84 @@ LOCAL_MODEL_NOTES = {
             "task": "Fast / bulk tagging, short summaries",
             "pick": "3–4B non-thinking instruct, Q4/Q5",
             "why": "Cheapest per token and reliable JSON; Qwen3-4B-Instruct-2507 is the current pick.",
-            "future": "8–12 GB VRAM is already plenty",
+            "future": "16 GB RAM + 8 GB VRAM is already plenty",
         },
         {
             "task": "Reasoning / CVE chains / severity rationale",
             "pick": "8–14B reasoning model, Q4/Q5",
             "why": "More deliberate answers, but slower; keep the 4B for routine triage.",
-            "future": "12–16 GB VRAM for 8B Q8 or 14B Q4",
+            "future": "32 GB RAM + 12–16 GB VRAM for 8B Q8 or 14B Q4",
         },
         {
             "task": "Long context / code / JS / config dumps",
             "pick": "Coder 7–14B, or 30B-A3B MoE for batch",
             "why": "Code-specialist context handling; the 30B MoE is fast only with enough VRAM.",
-            "future": "24 GB VRAM for 30B-A3B Q4/Q5",
+            "future": "64 GB RAM + 24 GB VRAM for 30B-A3B Q4/Q5",
         },
         {
             "task": "Prose / reports / writeups",
             "pick": "12–32B instruct or Gemma-class prose model",
             "why": "Better narrative flow and fewer terse, reasoning-only outputs.",
-            "future": "16–24 GB VRAM for 12B Q8 or 27–32B Q4",
+            "future": "32–64 GB RAM + 16–24 GB VRAM for 12B Q8 or 27–32B Q4",
         },
         {
             "task": "Vision / screenshots",
             "pick": "4B–9B VLM (Qwen3.5 or Gemma 4)",
             "why": "Screenshot description and UI context; text redaction still does not redact pixels.",
-            "future": "8–12 GB VRAM for 4B–9B vision",
+            "future": "32 GB RAM + 8–12 GB VRAM for 4B–9B vision",
         },
         {
             "task": "Embeddings / search",
             "pick": "MiniLM or nomic-embed-text",
             "why": "Small, fast and CPU-friendly; no chat capability.",
-            "future": "CPU is enough; GPU only helps bulk indexing",
+            "future": "16 GB RAM is enough; GPU only helps bulk indexing",
         },
     ],
     "future_tiers": [
         {
-            "vram": "8–12 GB",
-            "good_for": "9B Q5/Q8, 12B Q4, 14B Q4 (tight)",
-            "examples": "Qwen3.5-9B, Gemma 4 12B, 8B reasoning",
-            "note": "The first meaningful upgrade from 4 GB: 9B at Q8 is comfortable on 12 GB.",
+            "ram": "16 GB",
+            "vram": "8 GB",
+            "good_for": "4B–8B Q5/Q8, 12B Q4 (tight)",
+            "examples": "Qwen3-4B, Qwen3.5-9B Q4, 8B reasoning",
+            "note": "The floor for a new machine, not a real upgrade from this 18 GB laptop. 16 GB is enough for 4B–8B; pick 32 GB if you want to keep 12B+ models loaded.",
         },
         {
-            "vram": "16 GB",
-            "good_for": "14B Q5/Q6, 12B Q8, 9B full context",
-            "examples": "DeepSeek-R1 14B, Qwen3.5-9B, Gemma 4 12B",
-            "note": "Good balance for reasoning and prose; 30B MoE still needs offload.",
+            "ram": "32 GB",
+            "vram": "12–16 GB",
+            "good_for": "9B Q8, 14B Q5/Q6, 12B Q6/Q8",
+            "examples": "Qwen3.5-9B, DeepSeek-R1 14B, Gemma 4 12B",
+            "note": "The first meaningful upgrade: 16 GB VRAM runs a 9B Q8 or 12B Q6/Q8 at moderate context, with 32 GB RAM for long context and offload.",
         },
         {
+            "ram": "64 GB",
             "vram": "24 GB",
             "good_for": "30B-A3B Q4/Q5 fully on GPU, 14B Q8, 12B vision",
             "examples": "Qwen3-Coder-30B-A3B, DeepSeek 14B, Gemma 4 12B",
-            "note": "The sweet spot for this collection: fast 30B MoE plus a 12–14B quality model.",
+            "note": "Top laptop tier (24 GB VRAM) or an eGPU/desktop. Fast 30B MoE plus a 12–14B quality model; 64 GB RAM keeps offload comfortable.",
         },
         {
+            "ram": "64–128 GB",
             "vram": "32 GB+",
-            "good_for": "32B Q5/Q6, 70B Q4 with offload, larger context",
+            "good_for": "32B Q5/Q6, 70B Q4 with offload",
             "examples": "Qwen 32B class, 70B Q4",
-            "note": "Diminishing returns for recon; spend the budget on RAM/NVMe too.",
+            "note": "Desktop/workstation territory; 32 GB VRAM is not a laptop part. Spend on RAM and NVMe if you run 70B.",
         },
         {
-            "vram": "64 GB+ unified/system RAM",
+            "ram": "128 GB+",
+            "vram": "64 GB+ unified",
             "good_for": "70B Q4/Q5, 100B+ MoE, very long context",
-            "examples": "Workstation GPU or unified-memory mini-PC",
-            "note": "Only worth it if you routinely analyze huge dumps; otherwise 24 GB is the value point.",
+            "examples": "Unified-memory workstation or mini-PC",
+            "note": "Only worth it for huge dumps; otherwise 24 GB VRAM is the value point.",
         },
     ],
     "buying_note": (
-        "VRAM is the first constraint, then system RAM for CPU/MoE offload. "
-        "For this workload a 24 GB GPU (or 16 GB + 64 GB RAM) is a better "
-        "target than a very large CPU-only machine. Keep models on NVMe; "
-        "loading a 16 GB GGUF from a slow disk is the real delay."
+        "On a laptop, VRAM and often RAM are soldered, so buy the memory you "
+        "expect to keep. 16 GB RAM is the floor; 32 GB is the first real "
+        "upgrade for 9B–14B work, and 64 GB only matters if you offload "
+        "30B+ models. For a future laptop, 16 GB VRAM is the practical sweet "
+        "spot and 24 GB is the top tier; 32 GB+ VRAM means a desktop or "
+        "eGPU. Keep models on NVMe; loading a 16 GB GGUF from a slow disk is "
+        "the real delay."
     ),
 }
 

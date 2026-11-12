@@ -15,9 +15,10 @@ version in `app/__init__.py` is `1.0.0`.
 
 - Settings → **Local model notes**: a snapshot of the Jan/LM Studio models on
   this machine, the models currently routed for each task, per-model fit and
-  tested-output notes, a task-to-model-class guide, and a future-PC VRAM guide.
-  This is static local guidance; Breadcrumb still only calls the model IDs in
-  the routing fields.
+  tested-output notes, a task-to-model-class guide, and a future-laptop/PC
+  RAM + VRAM guide starting at 16 GB RAM. The current hardware is identified
+  as a laptop. This is static local guidance; Breadcrumb still only calls the
+  model IDs in the routing fields.
 - Settings tests cover the note panel and require the model inventory to keep
   actionable name/size/best-for/fit fields. Full suite after the change:
   **277 passed, 1 warning**.

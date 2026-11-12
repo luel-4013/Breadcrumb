@@ -642,7 +642,9 @@ def test_settings_has_model_picker():
     assert 'id="modelNotes"' in r.text
     assert "Qwen3-4B-Instruct-2507" in r.text
     assert "Which model for which task" in r.text
-    assert "Future PC guide" in r.text
+    assert "Future laptop / PC guide" in r.text
+    assert "<th>RAM</th>" in r.text
+    assert "16 GB" in r.text
 
 
 def test_local_model_notes_have_actionable_fields():
@@ -658,6 +660,11 @@ def test_local_model_notes_have_actionable_fields():
         assert model["fit"] in {"fits", "tight", "too-large", "unknown"}
     assert {task["task"] for task in notes["tasks"]}
     assert notes["future_tiers"] and notes["buying_note"]
+    assert notes["future_tiers"][0]["ram"] == "16 GB"
+    for tier in notes["future_tiers"]:
+        assert tier["ram"] and tier["vram"] and tier["good_for"]
+    assert "laptop" in notes["hardware"].lower()
+    assert "laptop" in notes["buying_note"].lower()
 
 
 def test_api_llm_models_detailed(monkeypatch):

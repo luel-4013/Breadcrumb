@@ -129,16 +129,17 @@
     </table>
   </div>
 
-  <h3 style="margin-top:16px">Future PC guide</h3>
+  <h3 style="margin-top:16px">Future laptop / PC guide</h3>
   <p class="muted">{{ model_notes.buying_note }}</p>
   <div style="overflow-x:auto">
     <table>
       <thead>
-        <tr><th>VRAM</th><th>Good for</th><th>Examples</th><th>Note</th></tr>
+        <tr><th>RAM</th><th>VRAM</th><th>Good for</th><th>Examples</th><th>Note</th></tr>
       </thead>
       <tbody>
         {% for tier in model_notes.future_tiers %}
         <tr>
+          <td class="mono">{{ tier.ram }}</td>
           <td class="mono">{{ tier.vram }}</td>
           <td>{{ tier.good_for }}</td>
           <td>{{ tier.examples }}</td>
