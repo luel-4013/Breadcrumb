@@ -29,8 +29,9 @@ Tests use an isolated temp database, never your real `breadcrumb.db`:
   `utcnow()`.
 - **Migrations, not resets.** New model fields go in `app/db.py` `MIGRATIONS`
   so existing databases keep working.
-- **No markdown docs in code PRs** except under `.github/` and the root
-  publishing files (`README.md`, `CONTRIBUTING.md`). Keep code comments short.
+- **Docs live in `docs/`.** Keep code comments short. Operator-facing docs,
+  release notes and runbooks belong under `docs/`; root publishing files are
+  `README.md`, `CONTRIBUTING.md` and `CHANGELOG.md`.
 
 ## Adding a parser
 
@@ -45,6 +46,56 @@ Tests use an isolated temp database, never your real `breadcrumb.db`:
 - One concern per PR. Include a test for behavior changes.
 - Run `compileall` and `pytest` before pushing — CI runs both.
 - Describe the hunter workflow your change improves, with a short example.
+- If you add a top-level CLI command or an `/api/v1` route, update
+  `docs/CLI_REFERENCE.md` or `docs/API_REFERENCE.md`; the release checker fails
+  otherwise.
+- If you change storage, add an additive migration in `app/db.py`, bump
+  `SCHEMA_VERSION`, and extend the migration test. Do not drop tables or rewrite
+  evidence hashes.
+
+## Release gates
+
+Run these before tagging a release. The short versions are safe on a laptop:
+
+```bash
+# Full suite (isolated temp DB; never the real breadcrumb.db)
+.venv/bin/python -m pytest -q
+
+# Static/source gate: dangerous code, secrets, docs links, pins, CLI/API coverage
+TMPD=$(mktemp -d)
+BREADCRUMB_DB_PATH="$TMPD/release.db" BREADCRUMB_SKIP_BACKUP=1 \
+  .venv/bin/python -m app.cli release check --json
+
+# Dependency inventory; --online queries OSV with package names/versions only
+.venv/bin/python scripts/dependency_audit.py --online
+
+# Upgrade/rollback every prior tag plus a copy of the local DB
+.venv/bin/python scripts/migration_drill.py --all --real-db breadcrumb.db
+
+# Accelerated schedule/queue soak; use --duration 86400 for acceptance
+.venv/bin/python scripts/soak.py --cycles 40
+```
+
+A release also needs a clean `compileall`, a changelog entry with the schema
+version and test count, migration/rollback notes when storage changes, and an
+archive generated from the tag:
+
+```bash
+git archive --format=zip --prefix=breadcrumb-<version>/ v<version> \
+  -o dist/breadcrumb-<version>.zip
+sha256sum dist/breadcrumb-<version>.zip > dist/SHA256SUMS
+```
+
+Do not rewrite an existing tag. Record the release-gate output with the release
+notes or an incident/evidence file.
+
+## Adding a local parser plugin
+
+The core parser contract is described in `docs/PARSER_AUTHORING.md`. A plugin is
+trusted local Python, loaded from `BREADCRUMB_PARSER_DIR` or
+`~/.breadcrumb/parsers`; it is not sandboxed and there is no remote marketplace.
+Keep built-in behavior deterministic and add a fixture plus a test for every new
+format or tool version.
 
 ## Reporting security issues
 

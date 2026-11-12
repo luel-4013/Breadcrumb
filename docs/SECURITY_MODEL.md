@@ -1,6 +1,7 @@
 # Breadcrumb security model
 
-**Status:** current for the Leadline merge (Phases 0–8, 2026-11-08).
+**Status:** current for Breadcrumb 1.0.0 (Phases 0–8 plus flagship Phases A–F,
+2026-11-12).
 **Deployment assumption:** one user, one machine, loopback only, no login.
 
 This document states what Breadcrumb protects, what it does not protect, and
@@ -15,10 +16,14 @@ and the rollback plan.
 |---|---|---|
 | Evidence captures | `paste` rows in SQLite | SHA-256 content seal + linear hash chain |
 | Programs, targets, entities, findings | SQLite | Local file permissions; backups |
+| Screenshot bytes | `<database>.artifacts` or `BREADCRUMB_ARTIFACT_DIR` | Content-addressed SHA-256, mode `0600`, verified on read |
+| Screenshot metadata and links | `evidenceartifact` rows in SQLite | Same local boundary; paths are relative and validated |
 | Header-profile secrets | `headerprofile.headers`, `.proxy` | Fernet encryption at rest (`enc:v1:`) |
 | Encryption key | `<BREADCRUMB_DB_PATH>.key` or `BREADCRUMB_KEY_FILE` | Mode `0600`; never in the DB |
 | NVD cache | `breadcrumb.nvd.json` by default | Local file; no credentials |
 | Import manifest | `<BREADCRUMB_DB_PATH>.leadline-import.json` | Mode `0600`; contains IDs and source path, not header values |
+| Local parser plugins | `BREADCRUMB_PARSER_DIR` or `~/.breadcrumb/parsers` | Trusted local Python; in-process, not sandboxed |
+| Review bundle | User-chosen output path | Redacted context, deterministic zip, in-memory verification |
 | Leadline source DB | User-controlled path | Opened read-only; never written |
 
 Trust boundary: the local OS user and the loopback HTTP port. Breadcrumb does
@@ -162,23 +167,131 @@ for the curl-copy workflow. Anyone with local UI access can read them.
 
 ---
 
-## 8. What Breadcrumb does not protect
+## 8. Import trust and evidence manifests
+
+- The parser contract is deterministic: a parser declares supported formats and
+  returns entities/findings plus an import report. `analyze()` keeps its
+  four-tuple compatibility wrapper; `analyze_detailed()` carries the report.
+- Every import records the parser name/version, completeness, skipped-row
+  reasons and a zero-entity hint. A partial or empty import is visible, not a
+  silent success.
+- Evidence Manifest v2 is **redacted by default**. `--reveal` is explicit and
+  marked unsafe. The manifest carries capture hashes, chain position and
+  provenance without raw secrets.
+- `breadcrumb verify --manifest` checks the manifest offline; supplying the raw
+  artifact also checks that the manifest describes those exact bytes.
+- Capture keys and content hashes make re-import idempotent. Deduplication
+  never rewrites an existing capture or its chain hash.
+- Screenshot manifest imports never auto-create targets. Explicit links must
+  belong to the same program; otherwise a target is inferred only from existing
+  program targets and scope/attribution rules.
+- Local parser plugins are imported Python running in-process. They are loaded
+  only from `BREADCRUMB_PARSER_DIR` or `~/.breadcrumb/parsers`; broken plugins
+  are recorded and skipped. There is no remote marketplace or auto-update.
+
+## 9. Cross-program memory and query surfaces
+
+- Ledger, diff, scope and graph queries run against the local SQLite database.
+  There is no sync service, telemetry or background upload.
+- Saved views are local database rows, not shared server objects.
+- Scope decisions use stable reason codes; exporting a decision cannot grant
+  access to a target.
+- Ledger JSONL exports contain only the selected program/asset data. Imports
+  round-trip through the normal ingest path, so they cannot bypass the capture
+  seal or chain.
+
+## 10. Reports, redaction and bundles
+
+- Redaction is **on by default**. Built-in masking cannot be disabled by a
+  custom rule. Custom `literal:`/`regex:` rules are additive, and rule text is
+  never echoed into report JSON.
+- `--reveal`/`reveal=1` is explicit, local and marked unsafe. Treat a revealed
+  report as a secret-bearing file.
+- One redacted context is rendered into every format (Markdown, HTML, JSON,
+  PDF). Reportlab input is escaped; filenames and template variables are
+  validated.
+- A review bundle is a deterministic zip containing the report, manifest,
+  capture manifests and optional screenshots. `verify-bundle` checks checksums
+  and manifests in memory; it does not extract files.
+- A bundle is still sensitive even when redacted: it can contain hostnames,
+  URLs, finding titles, comments and timestamps. Share it deliberately.
+- Screenshots are included only when explicitly requested. Text redaction does
+  **not** mask pixels, EXIF or content visible in the image.
+
+## 11. Screenshot artifacts
+
+- Accepted formats are PNG, JPEG, GIF and WebP only. Magic bytes and dimensions
+  are validated; SVG, PDF and corrupt/oversized files are rejected.
+- Caps: 12 MiB/image, 12,000 px per side, 2,000 rows / 5 MiB per manifest,
+  1,000 images per import.
+- Bytes are stored outside SQLite under a content-addressed path. Directories
+  are created `0700`, files `0600`, and every read verifies SHA-256.
+- Storage paths are relative and validated; import manifest paths cannot escape
+  the artifact root.
+- `GET /api/v1/artifacts/<id>/content` sends `X-Content-Type-Options: nosniff`
+  and `Content-Security-Policy: default-src 'none'; sandbox`.
+- Deleting an artifact row removes the file only when the final reference is
+  gone. Importing the same bytes again reuses the file but creates a distinct
+  evidence row when the program/URL/finding key differs.
+
+## 12. Automation, schedules and the parser SDK
+
+- Schedules read **local folders only**. There is no URL/API pull, no remote
+  fetch and no cloud queue.
+- Failed files stay in the drop folder; successful/empty files move to
+  `processed/`. A stale `running` row is recovered after
+  `max(3600, interval × 2)` seconds and marked `stale`, not silently forked.
+- `skip` and `queue` overlap policies are explicit. Disabled schedules never
+  run; enabling starts from now rather than replaying missed runs.
+- The scheduler is a foreground loop or a `--once` cron target. It does not
+  install a boot service.
+- Run one worker per database. Jobs use leases, heartbeat, bounded attempts and
+  cooperative cancellation; expired leases are recoverable.
+- `breadcrumb parsers` shows local plugin paths and load errors. A plugin has
+  the user's filesystem and network permissions; only install trusted code.
+
+## 13. Release, migration and supply chain
+
+- Runtime dependencies are pinned in `requirements.txt`; the release checker
+  verifies installed versions and `scripts/dependency_audit.py` can query OSV
+  with package names/versions only.
+- `breadcrumb release check` scans tracked source for `shell=True`, dynamic
+  `eval`, credential shapes, broken relative docs links and missing CLI/API
+  reference coverage. It is offline and does not read user data.
+- Migrations are additive. `init_db()` writes a pre-migration backup before the
+  first change unless explicitly skipped, and never recomputes an existing
+  evidence hash.
+- The migration/rollback drill upgrades databases from every prior tag,
+  verifies counts/schema/chain, restores the pre-migration backup and proves
+  the old code opens it.
+- Running an old binary against a migrated database is not supported. Restore
+  the pre-migration backup first.
+- Release archives are generated from the tag with `git archive` and published
+  with `SHA256SUMS`.
+
+## 14. What Breadcrumb does not protect
 
 - Multi-user access control, SSO, roles or per-user audit.
-- Encryption of the whole database, evidence captures or findings at rest.
+- Encryption of the whole database, evidence captures, findings or screenshot
+  bytes at rest.
+- Pixel-level or EXIF redaction inside screenshots.
+- A sandbox for local parser plugins or external tool adapters.
 - A compromised OS account, browser, editor, shell history or backup target.
-- A malicious or backdoored external tool binary.
-- Supply-chain compromise of Python dependencies.
+- A malicious or backdoored external tool binary or parser plugin.
+- Supply-chain compromise of Python dependencies or transitive dependencies.
 - Legal authorization. Private-target mode is a capability, not permission.
   Only scan systems you are authorized to test.
 - Denial of service from a local process or an enormous scan target.
+- Confidentiality of a review bundle after it leaves the machine; redaction
+  reduces but does not eliminate sensitive metadata.
 
 ---
 
-## 9. Required deployment controls
+## 15. Required deployment controls
 
 1. Keep `BREADCRUMB_HOST=127.0.0.1`; do not expose the port.
-2. Back up the DB **and** key separately; restrict backup permissions.
+2. Back up the DB, key **and** artifact directory separately; restrict backup
+   permissions.
 3. Run the worker as an unprivileged user.
 4. Keep `BREADCRUMB_EXECUTOR=off` unless actively scanning.
 5. Keep `BREADCRUMB_EXTERNAL_TOOLS` off unless adapters are needed.
@@ -189,10 +302,20 @@ for the curl-copy workflow. Anyone with local UI access can read them.
    ciphertext integrity is in doubt.
 9. Run `/api/v1/verify` after restores and before sign-off.
 10. Keep the Leadline folder read-only as a fallback until parity sign-off.
+11. Restrict the artifact directory to the local user; treat it as evidence,
+    not as a public web root.
+12. Install parser plugins only from trusted local code. Review the plugin
+    directory before running the app.
+13. Review screenshots and report/bundle metadata before sharing, even when
+    text redaction is enabled.
+14. Run `breadcrumb release check`, the dependency audit and the
+    migration/rollback drill before publishing a release.
+15. Test migrations on a copy first; keep the pre-migration backup until the
+    upgraded database passes integrity and chain verification.
 
 ---
 
-## 10. Reporting a security issue
+## 16. Reporting a security issue
 
 This is a local, single-user project. If you find a vulnerability, do not
 publish exploit details before the owner has a chance to fix it. Include the

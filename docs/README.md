@@ -1,10 +1,11 @@
 # Breadcrumb + Leadline planning documents
 
-Status: **Phase E of the flagship plan is implemented and released as `0.9.0`
-(2026-11-11). Phase D is `0.8.0`, Phase C is `0.7.0`, Phase B is `0.6.0`
-(2026-11-10), Phase A is `0.5.0` (2026-11-09), and Phases 0–8 are implemented
-and released as `0.4.0` (2026-11-08). The `v0.4.0` tag remains intact;
-0.5.0–0.9.0 are additive.**
+Status: **Breadcrumb 1.0.0 is implemented and released (2026-11-12).** Phase F
+(1.0.0) adds the offline release gate, dependency audit, all-tag
+migration/rollback drill, soak harness and support policy. Phase E is `0.9.0`,
+Phase D is `0.8.0`, Phase C is `0.7.0`, Phase B is `0.6.0`, Phase A is `0.5.0`,
+and Phases 0–8 are `0.4.0` (2026-11-08). The `v0.4.0` tag remains intact;
+0.5.0–1.0.0 are additive.
 Included: durable job queue/worker, scope guard, encrypted-at-rest
 header-profile secrets, the twelve-phase `leadline-recon` preset (DNS, host
 intel, ports/TLS, HTTP, tech, JS, params, headers, API, vuln candidates, CVE
@@ -19,7 +20,7 @@ API, security model, hardware/AI guide, troubleshooting, backup/restore/upgrade
 runbook, security checklist, release notes and rollback plan are present.
 Post-release research (2026-11-08) studied 19 external projects plus the
 Leadline baseline, recorded 20 success/failure reasons per project, and produced
-a flagship plan for the evidence-first recon notebook. Phase A (0.5.0) now
+a flagship plan for the evidence-first recon notebook. Phase A (0.5.0)
 implements the proof slice: parser contract, import reports/completeness,
 Evidence Manifest v2, `breadcrumb doctor`, sample demo, and a benchmark
 harness. Phase B (0.6.0) implements the memory slice: Ledger v2, Diff v2,
@@ -31,15 +32,18 @@ a local parser SDK, idempotent/bulk/paginated API automation, and recorded
 100k-import/1M-read benchmarks. Phase E (0.9.0) implements the capture slice:
 EyeWitness/Gowitness screenshot manifests, content-addressed artifact storage,
 explicit screenshot reports/bundles, and adapter diagnostics. No browser is
-embedded. Phase F (1.0.0) is the hardening/release gate.
-Date: 2026-10-27 to 2026-11-08
+embedded. Phase F (1.0.0) implements the hardening/release gate: offline
+release checker, dependency audit, migration/rollback drill, soak harness,
+support policy and complete CLI/API references.
+Research date: 2026-10-27 to 2026-11-08; implementation through 2026-11-12.
 Repos inspected:
 
 - Breadcrumb: `e51c91b` — *First functional phase*
 - Leadline: `6802a50` — *Prepare repository for public release*
 
 Both working trees were clean when the research began. Planning itself changed
-no code. The implementation is additive and is released as `0.4.0`.
+no code. The implementation is additive and is released as `0.4.0` through
+`1.0.0`.
 
 ## Phase 0 implementation status (2026-10-29)
 
@@ -54,8 +58,8 @@ no code. The implementation is additive and is released as `0.4.0`.
 | Legacy schema backfill | Implemented | `chain_seq`, `capture_key`, `evidencechain` migration test |
 
 Test baseline after Phase 0: **72 passed, 1 warning** (historical).
-Current suite after the native-executor, secrets, Phases 4–8 and Phases A–E:
-**267 passed, 1 warning** (2026-11-11).
+Current suite after the native-executor, secrets, Phases 4–8 and Phases A–F:
+**276 passed, 1 warning** (2026-11-12).
 
 ## Native-executor vertical slice (2026-11-06)
 
@@ -257,6 +261,32 @@ Operational documents added by Phase D:
     benchmarks, 1M-entity baseline, query plans, indexes, maintenance and
     capacity planning.
 
+Operational documents added by Phase E:
+
+29. **[SCREENSHOT_COOKBOOK.md](SCREENSHOT_COOKBOOK.md)** — EyeWitness/Gowitness
+    manifests, upload/import, storage, verification, report/bundle inclusion and
+    the pixel-redaction boundary.
+30. **[ADAPTER_SAFETY.md](ADAPTER_SAFETY.md)** — adapter diagnostics, scope mode,
+    strict policy, execution controls and the external-tool trust boundary.
+
+Release documents added by Phase F:
+
+31. **[WHY_BREADCRUMB.md](WHY_BREADCRUMB.md)** — product thesis, target user,
+    evidence model and explicit non-goals.
+32. **[RELEASE_NOTES_1.0.0.md](RELEASE_NOTES_1.0.0.md)** — 1.0.0 summary,
+    verification table and known limitations.
+33. **[MIGRATION_DRILL.md](MIGRATION_DRILL.md)** — all-tag upgrade, rollback,
+    real-database copy and evidence.
+34. **[RELIABILITY_SOAK.md](RELIABILITY_SOAK.md)** — soak harness, injected
+    failures, short-smoke evidence and failure interpretation.
+35. **[SUPPORT_POLICY.md](SUPPORT_POLICY.md)** — supported versions,
+    deprecation, upgrade support and security reporting.
+36. **[ROADMAP.md](ROADMAP.md)** — next three bets and explicit non-goals.
+37. **[CLI_REFERENCE.md](CLI_REFERENCE.md)** — every top-level command and its
+    operator contract.
+38. **[API_REFERENCE.md](API_REFERENCE.md)** — every `/api/v1` route, local
+    boundary rules and examples.
+
 ## Phase D implementation status (2026-11-11)
 
 | Capability | Status | Evidence |
@@ -276,6 +306,31 @@ run-history/stale/overlap tests and the `scheduler --once` cron path rather
 than a wall-clock week in CI. A third-party parser is exercised by the Phase D
 test fixture without core changes. The OpenAPI examples are covered by route
 and API tests; the generated OpenAPI document is served at `/openapi.json`.
+
+## Phase E implementation status (2026-11-11)
+
+| Capability | Status | Evidence |
+|---|---|---|
+| Screenshot import | Implemented | EyeWitness/Gowitness/generic JSON/JSONL/CSV; `tests/test_phase_e.py` |
+| Content-addressed storage | Implemented | bytes outside SQLite; SHA-256 verified on read; schema 8 |
+| Format and size guardrails | Implemented | PNG/JPEG/GIF/WebP; SVG/PDF rejected; caps tested |
+| Report/bundle screenshots | Implemented | explicit variable/flag; HTML/PDF embed; bundle hash verification |
+| Web/API/CLI | Implemented | `/artifacts`, artifact API, `breadcrumb artifacts` |
+| Adapter diagnostics | Implemented | `/api/v1/tools`, `breadcrumb tools`, `docs/ADAPTER_SAFETY.md` |
+| Pixel-redaction boundary | Documented | reports, bundles and cookbook state pixels are not redacted |
+
+## Phase F implementation status (2026-11-12)
+
+| Capability | Status | Evidence |
+|---|---|---|
+| Offline release gate | Implemented | `app/release.py`; `breadcrumb release check`; 0/0/0 scan |
+| Dependency audit | Verified | 8 runtime pins matched; OSV 0 known vulnerabilities |
+| Migration/rollback drill | Verified | `v0.4.0`–`v0.9.0` + real DB copy PASS |
+| Reliability soak harness | Implemented + smoke | 40 cycles, 0 errors, integrity `ok`, chain valid |
+| Support/deprecation policy | Documented | `docs/SUPPORT_POLICY.md` |
+| CLI/API coverage | Verified | complete references; release checker PASS |
+| Full suite | Verified | **276 passed, 1 warning** |
+| 24-hour wall-clock soak | Operator step | Harness supports `--duration 86400`; not claimed as run |
 
 ## One-paragraph summary
 
@@ -300,7 +355,7 @@ Phase 8 hardening runbooks are complete.
 | Check | Result |
 |---|---|
 | Breadcrumb tests (planning baseline) | `62 passed, 1 warning in 1.91s` (`.venv/bin/python -m pytest -q`) |
-| Breadcrumb tests (current slice) | `234 passed, 1 warning` (`.venv/bin/python -m pytest -q`) |
+| Breadcrumb tests (current slice) | `276 passed, 1 warning` (`.venv/bin/python -m pytest -q`) |
 | Leadline tests | `41 passed, 7 warnings in 30.80s` (`/tmp/opencode/leadline-venv/bin/python -m pytest -q`) |
 | Breadcrumb stack | FastAPI, SQLModel, SQLite, Jinja UI, ~7,723 LOC Python |
 | Leadline stack | FastAPI, async SQLAlchemy, SQLite, React/Vite UI, ~8,265 LOC Python + ~2,317 LOC UI |
@@ -314,7 +369,8 @@ Phase 8 hardening runbooks are complete.
   NVD/CPE verification, OpenAPI parsing, graph path navigation, report
   highlights, snapshots/diffs/triage, PDF and compatibility API, opt-in
   external tool adapters, and the one-way Leadline importer with verification
-  and runbooks. It is released as **`0.4.0`**.
+  and runbooks. The flagship Phases A–F are implemented and released through
+  **`1.0.0`** (schema 8).
 - They do not claim literal UI/API parity. Parity is capability parity inside
   Breadcrumb plus a compatibility API; the React SPA and second service/database
   are intentionally not ported (owner decision Q1).
@@ -322,6 +378,8 @@ Phase 8 hardening runbooks are complete.
   scans/findings/graph rows; those paths are covered by synthetic fixtures.
 - They do not claim external tool execution is sandboxed. Strict mode and an
   egress firewall remain deployment controls; Gate C is an owner sign-off item.
+- They do not claim a completed 24-hour wall-clock soak. 1.0 ships the harness
+  and a 40-cycle smoke; the long run is an operator acceptance step.
 - They do not claim external primary sources were all reachable. The official
   SQLite pages and one OWASP page timed out from this network; equivalent
   behavior was verified against the local SQLite build, Python’s `sqlite3`

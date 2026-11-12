@@ -297,7 +297,113 @@ Correct. Imported jobs are read-only history. Queue a new scan.
 
 ---
 
-## 7. External lookups, NVD and AI
+## 7. Automation, screenshots and reports
+
+### A schedule does not run or reports `skipped`
+
+1. Check the schedule is enabled and its interval has elapsed:
+   `breadcrumb schedule show <id> --json`.
+2. Check the source folder exists and is readable by the user running the
+   scheduler. Schedules read local folders only; a network mount may disappear.
+3. Check overlap policy. `skip` does nothing while another run is active;
+   `queue` queues one follow-up.
+4. Inspect the latest `ScheduleRun` detail. A crashed `running` row becomes
+   `stale` after `max(3600, interval × 2)` seconds and the next run recovers it.
+5. Remember that `scheduler` is a foreground loop or a `--once` cron target; it
+   does not install a boot service.
+
+### A file in a watched folder was not imported
+
+- Binary, hidden, temporary and partial-download files are skipped by design.
+- Files over 25 MB and runs over 200 files are bounded; the run detail says so.
+- A parser may have returned zero entities. Check the import report and
+  `breadcrumb ingest <file> --dry-run`.
+- Identical content is a duplicate capture; it is counted, not ingested twice.
+- Failed files stay in the drop folder. Successful/empty files move to
+  `processed/`; look there before assuming the file vanished.
+
+### A screenshot upload or manifest import is rejected
+
+- Accepted formats are PNG, JPEG, GIF and WebP only. SVG and PDF are rejected
+  deliberately because they can contain active content.
+- Limits: 12 MiB per image, 12,000 px per side, 2,000 rows / 5 MiB per
+  manifest, 1,000 images per import.
+- An explicit target/entity/finding link must belong to the same program.
+- Imports never auto-create targets. Create the target first or supply a source
+  URL that matches an existing target.
+- Manifest paths must stay under the manifest/base directory; absolute paths
+  and `..` traversal are rejected.
+
+### A screenshot reports a hash mismatch or missing file
+
+- The database stores a relative content-addressed path, not the bytes. Confirm
+  `BREADCRUMB_ARTIFACT_DIR` or the default `<database>.artifacts` directory was
+  restored with the database.
+- `breadcrumb artifacts show <id> --json` performs a live SHA-256 check.
+- Do not edit the hash to silence the error. Restore the file from backup, or
+  deliberately delete the broken row.
+- Orphan files (no database row) are harmless; never point the app at a public
+  web root.
+
+### A report or bundle has no screenshots
+
+- Report templates include screenshots only with `include_screenshots=1`
+  (`breadcrumb render ... --var include_screenshots=1`).
+- Bundles require `--include-screenshots` explicitly. Caps are 50 images /
+  32 MiB; over-cap images are excluded with a warning.
+- Markdown lists image metadata rather than embedding bytes; HTML/PDF embed
+  supported images.
+- Redaction masks text fields, not image pixels. Review every image before
+  sharing.
+
+### `verify-bundle` fails
+
+- The zip is truncated, edited or was built by an incompatible version. Rebuild
+  it instead of editing `manifest.json`.
+- Verification runs in memory: it checks the zip checksums, bundle manifest,
+  capture manifests and optional screenshot hashes.
+- A bundle is a redacted evidence copy, not an encrypted container. Treat it as
+  sensitive even when verification passes.
+
+### A local parser plugin does not load
+
+- Plugins are read from `BREADCRUMB_PARSER_DIR` or `~/.breadcrumb/parsers`.
+- A module must expose `PARSER` or `get_parser()`, subclass `Parser`, and have a
+  unique name and version.
+- Run `breadcrumb parsers --json` (or open `/parsers`) for the load error. A
+  broken plugin is skipped and does not stop built-in parsers.
+- Plugins execute in-process with your permissions. There is no sandbox or
+  remote marketplace; only install code you trust.
+
+### Redaction looks incomplete
+
+- Redaction is on by default. Built-in masking cannot be disabled by a custom
+  rule; `--reveal`/`reveal=1` is the explicit unsafe switch.
+- Custom rules are additive and never replace built-in masks.
+- Screenshot pixels, filenames inside images and EXIF are not redacted.
+- Review the rendered output before sending it; a bundle is still sensitive.
+
+### `breadcrumb release check` fails
+
+The report names each failing check:
+
+```bash
+breadcrumb release check --json
+```
+
+- `dangerous_code`: remove `shell=True` or dynamic `eval` from tracked source.
+- `secrets`: remove the credential shape and rotate the credential if real.
+- `docs_links`: fix or remove the broken relative link.
+- `dependencies`: install the pinned runtime versions.
+- `cli_reference` / `api_reference`: document the new command or `/api/v1`
+  route in `docs/CLI_REFERENCE.md` or `docs/API_REFERENCE.md`.
+
+Do not suppress the check to make a release pass; fix the source or the
+reference.
+
+---
+
+## 8. External lookups, NVD and AI
 
 ### CVE findings are missing
 
@@ -325,23 +431,28 @@ visible. Check the phase/job event for the provider error. Use the per-job
 
 ---
 
-## 8. Backup and restore
+## 9. Backup and restore
 
 See [BACKUP_RESTORE_UPGRADE.md](BACKUP_RESTORE_UPGRADE.md). The short version:
-back up the DB and key separately, use SQLite’s online backup API, and never
-copy only the main file while WAL is active.
+back up the DB, key and artifact directory; use SQLite’s online backup API; and
+never copy only the main file while WAL is active. A DB without its artifact
+directory restores rows but not screenshot bytes.
 
 ---
 
-## 9. Diagnostic bundle
+## 10. Diagnostic bundle
 
 For a bug report, collect:
 
 ```bash
 curl -s http://127.0.0.1:8787/health
 curl -s http://127.0.0.1:8787/api/v1/verify
+.venv/bin/python -m app.cli doctor --json
 .venv/bin/python -m app.cli version
 .venv/bin/python -m app.cli jobs list --limit 20 --json
+.venv/bin/python -m app.cli schedules list --json
+.venv/bin/python -m app.cli artifacts list --limit 20 --json
+.venv/bin/python -m app.cli release check --json
 ```
 
 Also include the exact command, exit code, and redacted stderr. Never attach a

@@ -6,7 +6,82 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The Leadline merge is the **0.4.0** release; **0.5.0** is the Phase A “Proof”
 release; **0.6.0** is the Phase B “Memory” release; **0.7.0** is the Phase C
 “Report” release; **0.8.0** is the Phase D “Automate” release; **0.9.0** is the
-Phase E “Capture” release. The version in `app/__init__.py` is `0.9.0`.
+Phase E “Capture” release; **1.0.0** is the flagship hardening release. The
+version in `app/__init__.py` is `1.0.0`.
+
+## [1.0.0] — 2026-11-12
+
+Breadcrumb 1.0 is the first release with a complete evidence-to-report path and
+an offline release gate: import, remember, diff, scope, report, bundle,
+automate and capture, with local-only storage and no required cloud service.
+Schema remains **8**; 1.0.0 adds no new tables or columns. Existing tags are
+unchanged. Full notes: [docs/RELEASE_NOTES_1.0.0.md](docs/RELEASE_NOTES_1.0.0.md).
+
+### Added — offline release gate
+
+- `app/release.py` and `breadcrumb release check [--json]`: scans tracked source
+  for `shell=True`/dynamic `eval`, credential shapes and broken relative docs
+  links; verifies runtime dependency pins; and requires every top-level CLI
+  command and `/api/v1` route to appear in the reference docs. The command is
+  offline and reads no user database.
+- `scripts/dependency_audit.py`: verifies every direct runtime pin against the
+  installed environment; `--online` sends only package names/versions to the
+  OSV batch API. Release-time only; the app itself makes no such call.
+- `scripts/migration_drill.py`: for every prior release tag, seeds a database
+  with that tag's own code, upgrades a copy, verifies schema/counts/integrity/
+  chain, restores the automatic pre-migration backup and opens it with the old
+  code. `--real-db` upgrades a copy of an existing database.
+- `scripts/soak.py`: accelerated local-folder/queue soak with injected stale
+  schedule runs, expired worker leases, integrity backups and a final chain
+  verification. `--duration 86400` is the wall-clock acceptance run.
+- `tests/test_phase_f.py`: release scanner, CLI gate, schema-7 upgrade, stale
+  schedule recovery, disk-full artifact cleanup, soak smoke and migration/
+  rollback drill coverage.
+
+### Added — documentation
+
+- `docs/WHY_BREADCRUMB.md` — product thesis, target user, evidence model and
+  explicit non-goals.
+- `docs/CLI_REFERENCE.md` and `docs/API_REFERENCE.md` — complete operator
+  references used by the release gate.
+- `docs/MIGRATION_DRILL.md` and `docs/RELIABILITY_SOAK.md` — reproducible
+  upgrade/rollback and failure-injection evidence.
+- `docs/SUPPORT_POLICY.md` and `docs/ROADMAP.md` — supported versions,
+  deprecation rules and the next three bets.
+- `docs/RELEASE_NOTES_1.0.0.md` — release summary, verification table and
+  known limitations.
+- Refreshed `SECURITY_MODEL.md`, `SECURITY_CHECKLIST.md`,
+  `BACKUP_RESTORE_UPGRADE.md`, `ROLLBACK_PLAN.md` and `TROUBLESHOOTING.md` for
+  1.0.0, schema 8, artifact storage, parser plugins, schedules, bundles and the
+  release gate.
+
+### Changed
+
+- `app/__init__.py` version is `1.0.0`.
+- Phase C report goldens now record `Breadcrumb 1.0.0`.
+- `requirements-dev.txt` pins the tested pytest version (`9.1.1`).
+
+### Verification
+
+- Full suite: **276 passed, 1 warning** (2026-11-12).
+- `breadcrumb release check`: PASS (0 dangerous constructs, 0 secrets, 0 broken
+  docs links, 8 runtime pins matched, CLI/API coverage complete).
+- Dependency audit: 8 runtime pins matched; OSV returned 0 known
+  vulnerabilities (point-in-time).
+- Migration/rollback: `v0.4.0`–`v0.9.0` and a real-database copy passed
+  integrity, schema, counts and chain checks.
+- Soak smoke: 40 cycles, 40 ingests, 5 stale-run recoveries, 3 lease
+  recoveries, 4 integrity backups, 0 errors, chain valid.
+
+### Known limitations
+
+- The local UI/API has no authentication; keep it on loopback or behind a
+  reverse proxy you control.
+- Redaction masks text fields, not screenshot pixels or EXIF.
+- Local parser plugins execute in-process with the user's permissions.
+- The 24-hour soak is a wall-clock operator run; 1.0.0 ships the harness and a
+  40-cycle smoke, not a completed 24-hour result.
+- The OSV audit is a point-in-time check, not a guarantee.
 
 ## [0.9.0] — 2026-11-11
 

@@ -1,19 +1,23 @@
-# Security review checklist (Leadline merge)
+# Security review checklist (Breadcrumb 1.0.0)
 
-Use this before treating the merge as signed off or exposing the installation
-to any new environment. Check every item; record the evidence/commit and the
-date. “Pass” means observed, not assumed.
+Use this before exposing the installation to any new environment or signing a
+release. Check every item; record the evidence/commit and the date. “Pass”
+means observed, not assumed.
 
-**Release:** Breadcrumb + Leadline merge, `0.4.0`, schema version 4
-**Date:** 2026-11-08
+**Release:** Breadcrumb 1.0.0, schema version 8
+**Date:** 2026-11-12
 **Owner:** luel-4013 (repository maintainer)
 
-**Preparation note (2026-11-08):** the checked items are backed by the automated
-suite (`182 passed, 1 warning`), the Phase 8 acceptance script (6/6 checks on
-copies), configuration review, or the live `/health`/verify endpoints where
-noted. The live `breadcrumb.db` still contains legacy plaintext header profiles
-and has no key file yet; it is ignored by git and is migrated/encrypted on the
-first startup of this release. The release itself is ready for the first push.
+**Preparation note (2026-11-12):** the checked items are backed by the automated
+suite (`276 passed, 1 warning`), `breadcrumb release check` (0 dangerous
+constructs, 0 credential shapes, 0 broken docs links, runtime pins matched,
+CLI/API reference coverage complete), the dependency audit (8 runtime pins,
+0 OSV matches), the all-tag migration/rollback drill (`v0.4.0`–`v0.9.0`), the
+40-cycle soak smoke, configuration review, and the live `/health`/verify
+endpoints where noted. The legacy `breadcrumb.db` is ignored by git, contains no
+application data, and upgrades cleanly on a copy to schema 8. The wall-clock
+24-hour soak remains an operator acceptance step; the harness is shipped and
+documented.
 
 ---
 
@@ -133,17 +137,28 @@ grep -R "Bearer \|api[_-]key\|password" logs/ 2>/dev/null   # no hits
 
 ---
 
-## 7. Reports and exports
+## 7. Reports, redaction and bundles
 
 - [x] False positives are excluded by default.
 - [x] `include_triaged=1` is the explicit internal switch.
 - [x] Unverified CVE candidates do not contribute to risk.
 - [x] Captured text is escaped before PDF/HTML generation.
 - [x] Export filenames are safe (no path traversal/control characters).
-- [x] Secrets are masked unless `reveal=1` is explicitly used.
-- [x] Compatibility exports use the same snapshot policy.
+- [x] Redaction is on by default; built-in masking cannot be disabled by a
+      custom rule. `--reveal`/`reveal=1` is explicit and marked unsafe.
+- [x] Custom rules are additive (`literal:`/`regex:`) and rule text is never
+      echoed into report JSON.
+- [x] One redacted context renders every format; report values are typed and
+      validated.
+- [x] Review bundles are deterministic zips; verification runs in memory and
+      checks checksums, manifest and capture manifests.
+- [x] Screenshot inclusion is explicit, capped (50 images / 32 MiB) and
+      verified by SHA-256; reports and docs state that pixels are **not**
+      redacted.
 
-**Evidence:** PDF escaping/filename tests; hostile-text fixture.
+**Evidence:** `tests/test_phase_c.py`, `tests/test_phase_e.py`; hostile-text
+fixture; `breadcrumb verify-bundle`; `docs/REDACTION_GUIDE.md` and
+`docs/SCREENSHOT_COOKBOOK.md`.
 
 ---
 
@@ -151,13 +166,17 @@ grep -R "Bearer \|api[_-]key\|password" logs/ 2>/dev/null   # no hits
 
 - [x] Backup uses SQLite’s online backup API (WAL-safe), not a live `cp`.
 - [x] DB and key are backed up together but stored with restricted permissions.
+- [x] The artifact directory is backed up with the DB; a DB without its
+      artifact bytes is not a complete evidence backup.
 - [x] Restore removes stale `-wal`/`-shm`.
 - [x] Restored DB passes `PRAGMA integrity_check`.
 - [x] Restored DB passes `/api/v1/verify`.
+- [x] Restored artifacts pass their SHA-256 checks.
 - [x] Pre-migration/pre-import backups are retained until verification.
 - [x] Rollback plan is current and tested on a copy.
 
-**Evidence:** restore drill on a copy; backup integrity output.
+**Evidence:** restore drill on a copy; backup integrity output; all-tag
+migration/rollback drill (`docs/MIGRATION_DRILL.md`).
 
 ---
 
@@ -165,44 +184,89 @@ grep -R "Bearer \|api[_-]key\|password" logs/ 2>/dev/null   # no hits
 
 - [x] `requirements.txt` pins runtime dependencies.
 - [x] `compileall app` passes.
-- [x] Full test suite passes (182 tests at Phase 8 sign-off).
-- [x] No `shell=True`, `eval`, or unpinned subprocess path in collectors.
-- [x] No raw network client outside the collector/guard path.
+- [x] Full test suite passes (276 tests at 1.0.0 sign-off).
+- [x] `breadcrumb release check` passes: no `shell=True`/dynamic eval,
+      no credential shapes, no broken relative docs links, pins match, and every
+      top-level CLI command and `/api/v1` route is documented.
+- [x] `scripts/dependency_audit.py --online` matches all runtime pins and
+      reports 0 known OSV vulnerabilities (point-in-time).
 - [x] No secrets committed to the repo or docs.
-- [x] Schema version and migration test are current.
+- [x] Schema version and additive migration/rollback tests are current.
+- [x] No telemetry, analytics or background network call is present.
 
 **Evidence:**
 
 ```bash
 .venv/bin/python -m compileall -q app
 .venv/bin/python -m pytest -q
-grep -R "shell=True" app || true
+.venv/bin/python -m app.cli release check --json
+.venv/bin/python scripts/dependency_audit.py --online
 ```
 
 ---
 
-## 10. Documentation and sign-off
+## 10. Phase A–F additions
+
+- [x] **Proof (0.5.0):** import reports record parser/version, completeness,
+      skipped rows and a zero-entity hint; Evidence Manifest v2 is redacted by
+      default and `--reveal` is explicit; `doctor` is read-only.
+- [x] **Memory (0.6.0):** Ledger/diff/scope/graph are local SQLite queries;
+      scope reason codes are stable; saved views are local rows; ledger JSONL
+      round-trips through the normal ingest path.
+- [x] **Report (0.7.0):** five built-in templates, typed variables, default-on
+      redaction, additive custom rules, deterministic bundle and in-memory
+      verification. See section 7.
+- [x] **Automate (0.8.0):** schedules read local folders only; failed files
+      stay in place; stale `running` rows recover after
+      `max(3600, interval × 2)` seconds; parser plugins load only from the
+      local parser directory and are documented as in-process trusted code.
+- [x] **Capture (0.9.0):** screenshot bytes are sniffed, size/dimension/row
+      capped, content-addressed outside SQLite, hash-verified on read, and
+      served with `nosniff` plus a sandbox CSP. SVG/PDF are rejected. Imports
+      never auto-create targets. See `docs/SCREENSHOT_COOKBOOK.md`.
+- [x] **Flagship gate (1.0.0):** offline release checker, dependency audit,
+      all-tag migration/rollback drill, soak harness and support policy are
+      present. See `docs/RELEASE_NOTES_1.0.0.md`,
+      `docs/MIGRATION_DRILL.md` and `docs/RELIABILITY_SOAK.md`.
+- [x] **Non-goals hold:** no Postgres/Redis/Neo4j, no cloud scanning, no
+      browser automation, no remote plugin marketplace, no multi-tenant auth
+      and no autonomous agent.
+
+**Evidence:** `tests/test_phase_a.py` through `tests/test_phase_f.py`;
+`scripts/migration_drill.py --all`; `scripts/soak.py --cycles 40`;
+`breadcrumb release check`.
+
+---
+
+## 11. Documentation and sign-off
 
 - [x] Merge guide, compatibility API, security model, hardware/AI guide,
       troubleshooting, backup/restore/upgrade, checklist, release notes and
       rollback plan are present and linked from `docs/README.md`.
+- [x] 1.0 documentation is present: `WHY_BREADCRUMB.md`, full CLI and API
+      references, migration drill, reliability soak, support policy and
+      roadmap; every CLI command and `/api/v1` route is covered by the release
+      checker.
 - [x] Parity matrix O/P rows are marked verified.
-- [x] Release notes state known limitations (real DB had no scans; synthetic
-      fixture covers those paths).
+- [x] Release notes state known limitations (legacy DB had no scans; synthetic
+      fixtures cover those paths; 24-hour soak is an operator run).
 - [x] Owner signs the parity matrix and accepts residual risks (private-target
-      SSRF, local no-auth UI, external-tool resolution gap).
+      SSRF, local no-auth UI, external-tool resolution gap, in-process parser
+      plugins, unredacted screenshot pixels).
 - [x] Leadline folder retained; no automatic deletion.
 
 **Sign-off:**
 
 | Role | Name | Date | Signature/commit |
 |---|---|---|---|
-| Owner | luel-4013 (repository maintainer) | 2026-11-08 | `0.4.0` release preparation; self-attested under owner instruction |
-| Reviewer | Automated suite + Phase 8 acceptance | 2026-11-08 | 182 passed, 1 warning; 6/6 acceptance checks |
+| Owner | luel-4013 (repository maintainer) | 2026-11-12 | `1.0.0` release preparation; self-attested under owner instruction |
+| Reviewer | Automated suite + release gate | 2026-11-12 | 276 passed, 1 warning; release check PASS; 8 runtime pins, 0 OSV matches |
+| Reviewer | Migration/rollback drill | 2026-11-12 | `v0.4.0`–`v0.9.0` PASS; real DB copy PASS |
+| Reviewer | Soak smoke | 2026-11-12 | 40 cycles, 0 errors, integrity `ok`, chain valid |
 
 ---
 
-## 11. Residual risks accepted at sign-off
+## 12. Residual risks accepted at sign-off
 
 1. Private/loopback scanning is allowed with a warning; metadata/link-local
    are blocked but the local network is reachable by design.
@@ -213,3 +277,11 @@ grep -R "shell=True" app || true
    encryption protects files/backups, not a compromised local session.
 5. The real Leadline database contained no scans/findings/graph rows; those
    import paths are proven by synthetic fixtures, not by that database.
+6. Local parser plugins execute in-process with the user's permissions. There
+   is no sandbox; only install parsers you trust.
+7. Redaction masks text fields, not pixels inside screenshots. Review images
+   before sharing a report or bundle.
+8. The 24-hour soak is a wall-clock operator acceptance run. 1.0 ships the
+   harness and a 40-cycle smoke, not a completed 24-hour result.
+9. The OSV dependency audit is a point-in-time check, not a guarantee against
+   future disclosures or transitive dependencies.

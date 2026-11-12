@@ -598,9 +598,18 @@ reverse proxy.
   pagination, 1M-entity performance. Implemented.
 - **0.9.0 — Capture:** EyeWitness/Gowitness screenshot import, hashed artifact
   storage, explicit screenshot reports/bundles, adapter diagnostics. Implemented.
-- **1.0.0 — Flagship:** security/migration/rollback/soak gates and docs. Next.
+- **1.0.0 — Flagship:** offline release gate, dependency audit, all-tag
+  migration/rollback drill, soak harness, support policy and complete CLI/API
+  references. Implemented.
 
-See [docs/IMPORT_COOKBOOK.md](docs/IMPORT_COOKBOOK.md),
+See [docs/WHY_BREADCRUMB.md](docs/WHY_BREADCRUMB.md),
+[docs/RELEASE_NOTES_1.0.0.md](docs/RELEASE_NOTES_1.0.0.md),
+[docs/MIGRATION_DRILL.md](docs/MIGRATION_DRILL.md),
+[docs/RELIABILITY_SOAK.md](docs/RELIABILITY_SOAK.md),
+[docs/SUPPORT_POLICY.md](docs/SUPPORT_POLICY.md),
+[docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md),
+[docs/API_REFERENCE.md](docs/API_REFERENCE.md),
+[docs/IMPORT_COOKBOOK.md](docs/IMPORT_COOKBOOK.md),
 [docs/MANIFEST_AND_DOCTOR.md](docs/MANIFEST_AND_DOCTOR.md),
 [docs/CROSS_PROGRAM_MEMORY.md](docs/CROSS_PROGRAM_MEMORY.md),
 [docs/DIFF_COOKBOOK.md](docs/DIFF_COOKBOOK.md),

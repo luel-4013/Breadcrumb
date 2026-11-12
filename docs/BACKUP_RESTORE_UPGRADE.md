@@ -1,12 +1,14 @@
 # Backup, restore and upgrade runbook
 
-**Applies to:** Breadcrumb with the Leadline merge (schema version 4).
+**Applies to:** Breadcrumb 1.0.0 (schema version 8).
 **Audience:** the owner/operator of a single local installation.
 
-Breadcrumb is one SQLite database plus an encryption key. A backup that omits
-the key cannot decrypt header profiles. A backup that copies only the main
-file while WAL is active can miss committed pages. Follow this runbook rather
-than `cp`-ing a live database.
+Breadcrumb is one SQLite database, one encryption key, and (if screenshots are
+used) one artifact directory. A backup that omits the key cannot decrypt header
+profiles. A backup that omits the artifact directory loses the screenshot bytes
+that the database references. A backup that copies only the main file while
+WAL is active can miss committed pages. Follow this runbook rather than `cp`-ing
+a live database.
 
 ---
 
@@ -18,6 +20,8 @@ than `cp`-ing a live database.
 | `breadcrumb.db.key` | Decrypts header profiles (`enc:v1:`) |
 | `breadcrumb.db.key.old` | Previous rotation key; needed for older ciphertext |
 | `BREADCRUMB_KEY_FILE` target | If you use a custom key path |
+| `breadcrumb.db.artifacts/` | Screenshot bytes, content-addressed by SHA-256 |
+| `BREADCRUMB_ARTIFACT_DIR` target | If you use a custom artifact directory |
 | `breadcrumb.nvd.json` | Local CVE verification cache (optional but expensive to rebuild) |
 | `<BREADCRUMB_DB_PATH>.leadline-import.json` | Import ID map/resume state (optional after a completed import) |
 | `breadcrumb.llm.json` | Local AI provider/routing config (no provider secrets? treat as sensitive) |
@@ -47,6 +51,16 @@ cp breadcrumb.db.key.old "backups/breadcrumb-$(date -u +%Y%m%d-%H%M%S).db.key.ol
 chmod 600 backups/*
 ```
 
+Copy the artifact directory with the database snapshot:
+
+```bash
+rsync -a breadcrumb.db.artifacts/ backups/breadcrumb-artifacts-$(date -u +%Y%m%d-%H%M%S)/
+# or: rsync -a "$BREADCRUMB_ARTIFACT_DIR/" backups/breadcrumb-artifacts-.../
+```
+
+If you use screenshots, a database-only backup is incomplete: the rows will
+restore but their content hashes will not resolve.
+
 Or use the SQLite CLI directly:
 
 ```bash
@@ -66,6 +80,8 @@ quiescent backup (next section) or accept the automatic pre-migration backup.
    sqlite3 breadcrumb.db ".backup 'backups/breadcrumb-pre-upgrade.db'"
    cp breadcrumb.db.key backups/breadcrumb-pre-upgrade.db.key
    cp breadcrumb.db.key.old backups/breadcrumb-pre-upgrade.db.key.old 2>/dev/null || true
+   rsync -a breadcrumb.db.artifacts/ backups/breadcrumb-pre-upgrade.artifacts/
+   # or: rsync -a "$BREADCRUMB_ARTIFACT_DIR/" backups/breadcrumb-pre-upgrade.artifacts/
    ```
 
 3. Record the current version/schema:
@@ -104,6 +120,8 @@ Do not run verification against the live DB while a scan is writing.
 - Keep at least one pre-import, one pre-upgrade and one recent daily backup.
 - Keep the matching key with each backup; store them together but restrict
   permissions.
+- Keep the matching artifact directory with each backup. Orphan artifact files
+  are harmless; missing files are broken evidence.
 - A backup without its key is still useful for non-secret data, but header
   profiles will be unreadable.
 - Never commit backups or keys to git.
@@ -135,7 +153,7 @@ standalone snapshot; mixing it with an old WAL can resurrect stale pages:
 rm -f breadcrumb.db-wal breadcrumb.db-shm
 ```
 
-### 3.3 Restore the key
+### 3.3 Restore the key and artifacts
 
 ```bash
 cp backups/breadcrumb-pre-upgrade.db.key breadcrumb.db.key
@@ -143,6 +161,15 @@ chmod 600 breadcrumb.db.key
 # if you use a rotation chain:
 cp backups/breadcrumb-pre-upgrade.db.key.old breadcrumb.db.key.old 2>/dev/null || true
 chmod 600 breadcrumb.db.key.old 2>/dev/null || true
+```
+
+Restore the artifact directory to the path the database expects
+(`<database-name>.artifacts` beside the DB, or `BREADCRUMB_ARTIFACT_DIR`):
+
+```bash
+rm -rf breadcrumb.db.artifacts
+cp -a backups/breadcrumb-pre-upgrade.artifacts breadcrumb.db.artifacts
+chmod -R u+rwX,go-rwx breadcrumb.db.artifacts
 ```
 
 If you use `BREADCRUMB_KEY_FILE` or `BREADCRUMB_SECRET_KEY(S)`, restore/export
@@ -160,19 +187,26 @@ Start the app and check:
 ```bash
 curl -s http://127.0.0.1:8787/health
 curl -s http://127.0.0.1:8787/api/v1/verify
+.venv/bin/python -m app.cli artifacts list --limit 5 --json
+.venv/bin/python -m app.cli artifacts show <artifact_id> --json
 ```
 
 Expected: `status: ok`, schema version matches the binary’s
-`expected_schema_version`, and no broken/forked chain links. Gaps from deleted
-programs are expected and are not tampering.
+`expected_schema_version`, no broken/forked chain links, and every opened
+artifact reports a matching SHA-256. Gaps from deleted programs are expected
+and are not tampering.
 
 Open a header profile in the UI or run a report to confirm decryption works.
+Open one screenshot and one report with `include_screenshots` if you use them.
 
 ### 3.5 Restore a backup from a different machine
 
-The DB and key are portable. Copy both; do not copy only the DB. The key file
-is machine-independent. Ensure file ownership/permissions match the local user
-and that the DB path in `BREADCRUMB_DB_PATH` points at the restored file.
+The DB, key and artifact directory are portable. Copy all three; do not copy
+only the DB. The key file is machine-independent. Ensure file ownership and
+permissions match the local user and that `BREADCRUMB_DB_PATH` and
+`BREADCRUMB_ARTIFACT_DIR` point at the restored locations. If the artifact
+directory moves, keep the same relative `<database-name>.artifacts` layout or
+set the environment variable explicitly.
 
 ---
 
@@ -215,22 +249,31 @@ Then:
 
 - open the programs/targets pages;
 - open a header profile (decryption);
-- generate a PDF from an existing snapshot;
+- generate a PDF from an existing snapshot and a rendered report;
+- open one screenshot and confirm its SHA-256 verifies;
+- verify a review bundle with `breadcrumb verify-bundle`;
 - queue one safe local/lab job if you are ready to scan;
 - confirm `/health` reports `maintenance: false`.
 
-### 4.4 Schema 3 → 4
+### 4.4 Schema 4 → 8
 
-The Leadline merge adds:
+Breadcrumb 1.0 applies additive migrations through schema 8:
 
-- `target.meta` JSON;
-- `finding.meta` JSON;
-- schema version 4.
+| Schema | Adds |
+|---|---|
+| 5 | Phase A import-report/parser metadata and indexes |
+| 6 | Phase B `SavedView` and cross-program query indexes |
+| 7 | Phase D `Schedule` and `ScheduleRun` |
+| 8 | Phase E `EvidenceArtifact` metadata (bytes stay outside SQLite) |
 
-The migration is additive. Old binaries may not understand the new columns, so
-rolling back the code after a migration should be done with the pre-migration
-backup, not by pointing the old binary at the migrated DB (see the rollback
-plan).
+Existing columns are added with `ALTER TABLE ... ADD COLUMN`; no table is
+dropped and no evidence hash is recomputed. The leadline-merge schema-4 change
+(`target.meta`, `finding.meta`) remains part of the path.
+
+Old binaries may not understand the new columns, so rolling back the code after
+a migration should be done with the pre-migration backup, not by pointing the
+old binary at the migrated DB (see the rollback plan). Before publishing a
+release, run `scripts/migration_drill.py --all` and keep the JSON evidence.
 
 ### 4.5 Post-import upgrade
 
@@ -262,10 +305,13 @@ useful for re-verification or a clean re-import.
 | Key lost, DB intact | Restore matching key; if none, encrypted headers are unrecoverable |
 | Both lost | Restore newest DB+key pair; re-import Leadline if needed |
 | DB corrupt | Stop writes; restore last integrity-checked backup; verify chain |
-| Migration failed | Stop; restore `.pre-migrate` backup + key; report traceback |
+| Artifact directory lost | Restore it with the matching DB; without it, screenshot rows cannot resolve |
+| Artifact hash mismatch | Stop; restore that file from backup or delete the broken row deliberately; do not edit the hash |
+| Migration failed | Stop; restore `.pre-migrate` backup + key + artifacts; report traceback |
 | Import wrong | Stop; restore `.pre-import` backup + key; re-run dry run |
 | Chain broken/forked | Stop; restore known-good backup; run `/api/v1/verify`; do not edit hashes |
 | Worker crash mid-job | Restart; lease recovery re-queues or fails with a clear reason |
+| Schedule run stuck `running` | Wait for `max(3600, interval × 2)` or restart the scheduler; it becomes `stale` |
 | Leadline source changed | Stop Leadline; copy again; re-run import |
 
 ---
@@ -274,6 +320,7 @@ useful for re-verification or a clean re-import.
 
 - Do not `cp` a live WAL database as your only backup.
 - Do not back up the DB without the key and then delete the key.
+- Do not back up screenshot metadata without the artifact directory.
 - Do not restore only the main file while an old `-wal` remains.
 - Do not run two workers or two app writers against one DB.
 - Do not edit `chain_hash`, `chain_seq`, `content_sha256`, the `evidencechain`

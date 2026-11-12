@@ -1,7 +1,8 @@
-# Rollback plan — Breadcrumb + Leadline merge
+# Rollback plan — Breadcrumb 1.0.0
 
-**Applies to:** Phases 0–8, schema version 4.
-**Date:** 2026-11-08.
+**Applies to:** Breadcrumb 1.0.0 (Phases 0–8 plus flagship Phases A–F),
+schema version 8.
+**Date:** 2026-11-12.
 **Audience:** the owner/operator of a single local installation.
 **Goal:** return to a known-good state without losing evidence or breaking the
 hash chain, at the smallest level that fixes the problem.
@@ -34,8 +35,8 @@ restore when disabling a capability is enough.
 | An external tool misbehaves | Unset `BREADCRUMB_EXTERNAL_TOOLS`; cancel/retry | L0 |
 | Imported findings/targets look wrong | Restore `.pre-import` backup + key | L1 |
 | Import aborted or verification failed | Do **not** delete the manifest; inspect report; restore if the destination changed | L1 |
-| Migration failed / app won't start | Restore `.pre-migrate` backup + key; run previous code | L2 |
-| New code has a bug but DB is fine | Check out previous commit; keep schema 4 | L3 |
+| Migration failed / app won't start | Restore `.pre-migrate` backup + key + artifacts; run previous code | L2 |
+| New code has a bug but DB is fine | Check out previous commit; keep schema 8 | L3 |
 | Everything is broken; need the old tool now | Stop Breadcrumb; start Leadline from its folder | L4 |
 
 ---
@@ -57,7 +58,9 @@ restore when disabling a capability is enough.
    sqlite3 breadcrumb.db ".backup '/secure/rollback/breadcrumb-before-rollback.db'"
    cp breadcrumb.db.key /secure/rollback/breadcrumb-before-rollback.db.key
    cp breadcrumb.db.key.old /secure/rollback/breadcrumb-before-rollback.db.key.old 2>/dev/null || true
+   rsync -a breadcrumb.db.artifacts/ /secure/rollback/breadcrumb-before-rollback.artifacts/
    chmod 600 /secure/rollback/*
+   chmod -R u+rwX,go-rwx /secure/rollback/breadcrumb-before-rollback.artifacts
    ```
 
 3. **Identify the target backup and key.** They must match:
@@ -183,11 +186,15 @@ chmod 600 breadcrumb.db.key
 If you use `BREADCRUMB_KEY_FILE` or `BREADCRUMB_SECRET_KEY(S)`, restore those
 instead.
 
+Restore the artifact directory that belongs to the pre-migration backup. A
+database restored without its artifact bytes still opens, but screenshot rows
+will report missing files.
+
 ### 6.2 Run the previous code
 
-Schema 4 adds columns the old code does not know about; do not point the old
-binary at the migrated DB. Restore the pre-migration DB and check out the
-previous commit/build that produced it.
+Schema 5–8 add parser metadata, saved views, schedules and screenshot artifact
+tables. Do not point an old binary at the migrated DB. Restore the
+pre-migration DB and check out the previous commit/build that produced it.
 
 ```bash
 git stash            # keep uncommitted work if the repo is a git checkout
@@ -198,6 +205,11 @@ git checkout <previous-known-good-commit>
 
 If the working tree is not a git checkout, use the archived copy of the
 previous code you kept with the backup.
+
+Restore the matching artifact directory with the database. A pre-screenshot
+database does not reference the newer files; leaving them in place is harmless.
+A database that references screenshots must have those exact SHA-256 files or
+the artifact view will report a mismatch.
 
 ### 6.3 Verify
 
@@ -216,18 +228,19 @@ integrity is `ok`, and the chain has no new broken links or forks.
 
 ## 7. L3 — Revert code, keep the database
 
-Use when schema 4 is fine but the new code has a defect.
+Use when schema 8 is fine but the new code has a defect.
 
 1. Stop the app/worker.
-2. Back up the current DB and key (section 3).
+2. Back up the current DB, key and artifacts (section 3).
 3. Check out the previous known-good code.
 4. Reinstall pinned requirements and run `compileall`.
 5. Start with `BREADCRUMB_EXECUTOR=off`.
 6. Verify `/health` and `/api/v1/verify`.
 
-The old code may not understand new features, but the additive columns are
-ignored by SQLModel if the model does not declare them. If the old binary
-refuses to start because of the schema version, use L2 instead.
+The old code may not understand new features, but additive columns are ignored
+by SQLModel if the model does not declare them. If the old binary refuses to
+start because of the schema version, use L2 instead. Do not delete the artifact
+directory when reverting code; older code simply ignores it.
 
 ---
 
@@ -261,6 +274,8 @@ Breadcrumb database.
 - [ ] `PRAGMA integrity_check` returns `ok`.
 - [ ] A header profile opens/decrypts (key matches the DB).
 - [ ] A report or PDF generates from an existing snapshot.
+- [ ] A screenshot opens and its SHA-256 verifies.
+- [ ] A review bundle verifies with `breadcrumb verify-bundle`.
 - [ ] The executor is off until you deliberately re-enable it.
 - [ ] The Leadline folder is unchanged (compare its fingerprint if in doubt).
 - [ ] The rollback reason, level, backup names and verification output are
@@ -287,10 +302,13 @@ Breadcrumb database.
 
 - [BACKUP_RESTORE_UPGRADE.md](BACKUP_RESTORE_UPGRADE.md) — backup/restore and
   migration mechanics.
+- [MIGRATION_DRILL.md](MIGRATION_DRILL.md) — repeatable all-tag upgrade and
+  rollback evidence.
+- [RELIABILITY_SOAK.md](RELIABILITY_SOAK.md) — schedule/queue failure injection.
 - [LEADLINE_MERGE_GUIDE.md](LEADLINE_MERGE_GUIDE.md) — import workflow.
 - [LEADLINE_IMPORT_VERIFICATION.md](LEADLINE_IMPORT_VERIFICATION.md) — real-data
   verification record.
 - [SECURITY_MODEL.md](SECURITY_MODEL.md) — trust boundaries and controls.
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — symptom-first diagnosis.
 - [SECURITY_CHECKLIST.md](SECURITY_CHECKLIST.md) — sign-off checklist.
-- [RELEASE_NOTES_PHASE8.md](RELEASE_NOTES_PHASE8.md) — release summary.
+- [RELEASE_NOTES_1.0.0.md](RELEASE_NOTES_1.0.0.md) — current release summary.

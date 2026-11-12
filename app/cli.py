@@ -1801,6 +1801,38 @@ def cmd_version(args) -> int:  # noqa: ARG001
     return 0
 
 
+def cmd_release(args) -> int:
+    """Run the local release gate (source hygiene, docs, dependency pins)."""
+    from .release import release_report, report_json
+
+    if args.action != "check":
+        print(f"release: unknown action {args.action}", file=sys.stderr)
+        return 2
+    report = release_report()
+    if args.json:
+        sys.stdout.write(report_json(report))
+    else:
+        print(f"Breadcrumb release check {report['version']} (schema {report['schema_version']})")
+        print(f"tracked files: {report['tracked_files']}")
+        for name, check in report["checks"].items():
+            status = "PASS" if check.get("ok") else "FAIL"
+            print(f"  [{status}] {name}")
+            for finding in check.get("findings") or []:
+                print(
+                    f"         {finding.get('file')}:{finding.get('line')} "
+                    f"{finding.get('pattern') or finding.get('reason')}"
+                )
+            for missing in check.get("missing") or []:
+                print(f"         {missing}")
+            if name == "dependencies" and check.get("mismatches"):
+                for item in check["mismatches"]:
+                    print(
+                        f"         {item['package']}: expected {item['expected']}, "
+                        f"installed {item['installed'] or 'missing'}"
+                    )
+    return 0 if report.get("ok") else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="breadcrumb", description="Offline-first recon notebook CLI")
     parser.add_argument("--version", action="version", version=f"breadcrumb {__version__}")
@@ -2138,6 +2170,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--replace", action="store_true", help="replace the cache instead of merging")
     p.add_argument("--json", action="store_true", help="machine-readable stats")
     p.set_defaults(func=cmd_nvd)
+
+    p = sub.add_parser("release", help="run the local release gate")
+    p.add_argument("action", choices=["check"])
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_release)
 
     sub.add_parser("version", help="print version").set_defaults(func=cmd_version)
     return parser
