@@ -73,6 +73,87 @@
   </form>
 </section>
 
+<section class="card" id="modelNotes">
+  <h2>Local model notes</h2>
+  <p class="muted">
+    Snapshot from {{ model_notes.reviewed }} · {{ model_notes.hardware }}.
+    {{ model_notes.summary }}
+  </p>
+  <div class="chips">
+    {% for task in task_classes %}
+    <span class="chip mono">{{ task_labels.get(task, task) }} → {{ config.routing.get(task, '—') or '—' }}</span>
+    {% endfor %}
+  </div>
+
+  <h3 style="margin-top:14px">Installed / tested models</h3>
+  <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr><th>Model</th><th>Size</th><th>Best for</th><th>On this PC / notes</th></tr>
+      </thead>
+      <tbody>
+        {% for m in model_notes.models %}
+        <tr>
+          <td>
+            <strong>{{ m.name }}</strong><br>
+            <span class="muted mono">{{ m.id }}</span>
+            <span class="badge x">{{ m.provider }}</span>
+            {% if m.id in routed_models %}<span class="badge seen">routed now</span>{% endif %}
+            <span class="chip fit-{{ m.fit }}">{{ m.fit }}</span>
+          </td>
+          <td class="mono">{{ m.size }}</td>
+          <td>{{ m.best_for }}</td>
+          <td>{{ m.verdict }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <h3 style="margin-top:16px">Which model for which task</h3>
+  <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr><th>Task</th><th>Model class</th><th>Why</th><th>Future PC target</th></tr>
+      </thead>
+      <tbody>
+        {% for t in model_notes.tasks %}
+        <tr>
+          <td>{{ t.task }}</td>
+          <td>{{ t.pick }}</td>
+          <td class="muted">{{ t.why }}</td>
+          <td>{{ t.future }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <h3 style="margin-top:16px">Future PC guide</h3>
+  <p class="muted">{{ model_notes.buying_note }}</p>
+  <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr><th>VRAM</th><th>Good for</th><th>Examples</th><th>Note</th></tr>
+      </thead>
+      <tbody>
+        {% for tier in model_notes.future_tiers %}
+        <tr>
+          <td class="mono">{{ tier.vram }}</td>
+          <td>{{ tier.good_for }}</td>
+          <td>{{ tier.examples }}</td>
+          <td class="muted">{{ tier.note }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="muted" style="margin-bottom:0">
+    Model IDs must match the IDs reported by the running LM Studio/Jan server.
+    Update this note when the local collection changes.
+  </p>
+</section>
+
 {% set picker_providers = config.providers | selectattr('enabled') | list %}
 {% if not picker_providers %}{% set picker_providers = config.providers %}{% endif %}
 <section class="card" id="modelPicker" data-default-provider="{{ config.active_provider }}">

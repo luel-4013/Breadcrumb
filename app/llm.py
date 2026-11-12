@@ -154,6 +154,206 @@ CURATED_SUGGESTIONS = [
     },
 ]
 
+# Snapshot of the models found on this machine and what they are good for.
+# Kept as data (not template prose) so the Settings page and tests can agree.
+# Update the date/list when the local collection changes.
+LOCAL_MODEL_NOTES = {
+    "reviewed": "2026-11-12",
+    "hardware": "AMD Ryzen 5 5600H · 18 GB RAM · NVIDIA GTX 1650 4 GB VRAM",
+    "summary": (
+        "Snapshot of the Jan and LM Studio libraries on this PC. The GTX 1650 "
+        "has 4 GB of VRAM, so 3–4B Q4/Q5 models are the practical daily "
+        "drivers; larger models are batch/quality experiments or future-PC "
+        "targets. Task routing above is what Breadcrumb actually calls."
+    ),
+    "models": [
+        {
+            "id": "qwen3-4b-instruct-2507",
+            "name": "Qwen3-4B-Instruct-2507 (UD-Q5_K_XL)",
+            "provider": "LM Studio",
+            "size": "2.9 GB",
+            "best_for": "Best all-round 4 GB model: tagging, analysis, reasoning, long dumps and report prose.",
+            "verdict": "Current default and the only model routed for all four tasks. Keep it as the daily driver.",
+            "fit": "fits",
+        },
+        {
+            "id": "qwen_qwen3.5-4b",
+            "name": "Qwen3.5-4B (Q4_K_M, vision)",
+            "provider": "LM Studio",
+            "size": "3.0 GB + vision projector",
+            "best_for": "General chat and screenshot/image understanding; newer than Qwen3-4B.",
+            "verdict": "Tight fit at 4 GB. Use Auto-fit and a small context; good backup or vision option.",
+            "fit": "tight",
+        },
+        {
+            "id": "qwen3.5-4b-claude-4.6-opus-reasoning-distilled-v2",
+            "name": "Qwen3.5-4B Claude 4.6 Opus Reasoning Distill v2",
+            "provider": "LM Studio",
+            "size": "3.4 GB",
+            "best_for": "Reasoning experiments; not a reliable structured-output or report model.",
+            "verdict": "Tested: produced reasoning-only/empty content. Do not route reports to it.",
+            "fit": "tight",
+        },
+        {
+            "id": "qwen3.5-4b-claude-4.6-opus-reasoning-distilled-v2-heretic",
+            "name": "Qwen3.5-4B Claude 4.6 Opus Reasoning Distill v2 (heretic)",
+            "provider": "LM Studio",
+            "size": "3.0 GB",
+            "best_for": "Experimental/uncensored reasoning only.",
+            "verdict": "Not for evidence reports; use Qwen3-4B-Instruct-2507 for anything you will submit.",
+            "fit": "tight",
+        },
+        {
+            "id": "qwen3-4b-2507-instruct-uncensored-hauhaucs-aggressive",
+            "name": "Qwen3-4B-2507 Instruct Uncensored (HauhauCS Aggressive, Q6_K)",
+            "provider": "LM Studio",
+            "size": "3.3 GB",
+            "best_for": "Experimental/uncensored chat only.",
+            "verdict": "Tested: Q6_K failed a 4096-context KV allocation on this GPU. Experimental; not a report writer.",
+            "fit": "tight",
+        },
+        {
+            "id": "qwen/qwen3.5-9b",
+            "name": "Qwen3.5-9B (Q8_0, vision)",
+            "provider": "LM Studio",
+            "size": "9.5 GB + vision projector",
+            "best_for": "General reasoning and vision; a strong 12 GB-class daily model.",
+            "verdict": "Too large for 4 GB at Q8. Future 12 GB+ GPU; use a Q4/Q5 quant to fit smaller cards.",
+            "fit": "too-large",
+        },
+        {
+            "id": "deepseek/deepseek-r1-0528-qwen3-8b",
+            "name": "DeepSeek-R1-0528-Qwen3-8B (Q8_0)",
+            "provider": "LM Studio",
+            "size": "8.7 GB",
+            "best_for": "Step-by-step reasoning, CVE chains and severity rationale.",
+            "verdict": "Too large at Q8 for 4 GB. A Q4 8B or this model on 8–12 GB VRAM is the reasoning upgrade.",
+            "fit": "too-large",
+        },
+        {
+            "id": "deepseek-r1-distill-qwen-14b",
+            "name": "DeepSeek-R1-Distill-Qwen-14B (Q4_K_L)",
+            "provider": "LM Studio",
+            "size": "9.6 GB",
+            "best_for": "Deeper reasoning when quality matters more than latency.",
+            "verdict": "Tested: too large for 4 GB and slower than the 4B. Future 12–16 GB GPU.",
+            "fit": "too-large",
+        },
+        {
+            "id": "google/gemma-4-12b-qat",
+            "name": "Gemma 4 12B IT QAT (Q4_0, vision)",
+            "provider": "LM Studio",
+            "size": "7.0 GB + vision projector",
+            "best_for": "Report prose, summaries and image understanding.",
+            "verdict": "Tested: 30% GPU offload ran at 2.7–3.0 tok/s and returned reasoning-only content. Future 12 GB+ prose model.",
+            "fit": "too-large",
+        },
+        {
+            "id": "qwen3-coder-30b-a3b-instruct",
+            "name": "Qwen3-Coder-30B-A3B-Instruct (IQ4_XS)",
+            "provider": "Jan",
+            "size": "16.4 GB",
+            "best_for": "Large code/config/JS dumps and long-context code work.",
+            "verdict": "CPU-only on this PC (no GPU layers, 11.4k context). Usable for patient batch work; excellent on a future 24 GB+ GPU.",
+            "fit": "too-large",
+        },
+        {
+            "id": "text-embedding-nomic-embed-text-v1.5",
+            "name": "Nomic Embed Text v1.5 (Q4_K_M)",
+            "provider": "LM Studio",
+            "size": "84 MB",
+            "best_for": "Semantic search and embeddings; no chat output.",
+            "verdict": "Bundled by LM Studio and CPU-friendly. Useful if you add vector/semantic search; Breadcrumb's core search works without it.",
+            "fit": "fits",
+        },
+        {
+            "id": "sentence-transformer-mini",
+            "name": "all-MiniLM-L6-v2 (Jan entry)",
+            "provider": "Jan",
+            "size": "weights missing",
+            "best_for": "Lightweight embeddings if the weights are installed.",
+            "verdict": "Only model.yml is present; the .gguf weights are missing, so it cannot load yet. Use nomic-embed-text or re-download it in Jan.",
+            "fit": "unknown",
+        },
+    ],
+    "tasks": [
+        {
+            "task": "Fast / bulk tagging, short summaries",
+            "pick": "3–4B non-thinking instruct, Q4/Q5",
+            "why": "Cheapest per token and reliable JSON; Qwen3-4B-Instruct-2507 is the current pick.",
+            "future": "8–12 GB VRAM is already plenty",
+        },
+        {
+            "task": "Reasoning / CVE chains / severity rationale",
+            "pick": "8–14B reasoning model, Q4/Q5",
+            "why": "More deliberate answers, but slower; keep the 4B for routine triage.",
+            "future": "12–16 GB VRAM for 8B Q8 or 14B Q4",
+        },
+        {
+            "task": "Long context / code / JS / config dumps",
+            "pick": "Coder 7–14B, or 30B-A3B MoE for batch",
+            "why": "Code-specialist context handling; the 30B MoE is fast only with enough VRAM.",
+            "future": "24 GB VRAM for 30B-A3B Q4/Q5",
+        },
+        {
+            "task": "Prose / reports / writeups",
+            "pick": "12–32B instruct or Gemma-class prose model",
+            "why": "Better narrative flow and fewer terse, reasoning-only outputs.",
+            "future": "16–24 GB VRAM for 12B Q8 or 27–32B Q4",
+        },
+        {
+            "task": "Vision / screenshots",
+            "pick": "4B–9B VLM (Qwen3.5 or Gemma 4)",
+            "why": "Screenshot description and UI context; text redaction still does not redact pixels.",
+            "future": "8–12 GB VRAM for 4B–9B vision",
+        },
+        {
+            "task": "Embeddings / search",
+            "pick": "MiniLM or nomic-embed-text",
+            "why": "Small, fast and CPU-friendly; no chat capability.",
+            "future": "CPU is enough; GPU only helps bulk indexing",
+        },
+    ],
+    "future_tiers": [
+        {
+            "vram": "8–12 GB",
+            "good_for": "9B Q5/Q8, 12B Q4, 14B Q4 (tight)",
+            "examples": "Qwen3.5-9B, Gemma 4 12B, 8B reasoning",
+            "note": "The first meaningful upgrade from 4 GB: 9B at Q8 is comfortable on 12 GB.",
+        },
+        {
+            "vram": "16 GB",
+            "good_for": "14B Q5/Q6, 12B Q8, 9B full context",
+            "examples": "DeepSeek-R1 14B, Qwen3.5-9B, Gemma 4 12B",
+            "note": "Good balance for reasoning and prose; 30B MoE still needs offload.",
+        },
+        {
+            "vram": "24 GB",
+            "good_for": "30B-A3B Q4/Q5 fully on GPU, 14B Q8, 12B vision",
+            "examples": "Qwen3-Coder-30B-A3B, DeepSeek 14B, Gemma 4 12B",
+            "note": "The sweet spot for this collection: fast 30B MoE plus a 12–14B quality model.",
+        },
+        {
+            "vram": "32 GB+",
+            "good_for": "32B Q5/Q6, 70B Q4 with offload, larger context",
+            "examples": "Qwen 32B class, 70B Q4",
+            "note": "Diminishing returns for recon; spend the budget on RAM/NVMe too.",
+        },
+        {
+            "vram": "64 GB+ unified/system RAM",
+            "good_for": "70B Q4/Q5, 100B+ MoE, very long context",
+            "examples": "Workstation GPU or unified-memory mini-PC",
+            "note": "Only worth it if you routinely analyze huge dumps; otherwise 24 GB is the value point.",
+        },
+    ],
+    "buying_note": (
+        "VRAM is the first constraint, then system RAM for CPU/MoE offload. "
+        "For this workload a 24 GB GPU (or 16 GB + 64 GB RAM) is a better "
+        "target than a very large CPU-only machine. Keep models on NVMe; "
+        "loading a 16 GB GGUF from a slow disk is the real delay."
+    ),
+}
+
 # Largest first. Auto-fit stops at the first context that loads and answers.
 # 2048 is always kept as the last-resort fallback for very tight cards.
 CONTEXT_CANDIDATES = (32768, 16384, 8192, 6144, 4096, 2048)

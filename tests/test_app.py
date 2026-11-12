@@ -639,6 +639,25 @@ def test_settings_has_model_picker():
     assert 'id="modelRefresh"' in r.text
     assert 'id="route_fast"' in r.text
     assert 'name="csrf-token"' in r.text
+    assert 'id="modelNotes"' in r.text
+    assert "Qwen3-4B-Instruct-2507" in r.text
+    assert "Which model for which task" in r.text
+    assert "Future PC guide" in r.text
+
+
+def test_local_model_notes_have_actionable_fields():
+    from app import llm
+
+    notes = llm.LOCAL_MODEL_NOTES
+    assert notes["reviewed"] and notes["hardware"]
+    ids = {model["id"] for model in notes["models"]}
+    assert "qwen3-4b-instruct-2507" in ids
+    assert "qwen3-coder-30b-a3b-instruct" in ids
+    for model in notes["models"]:
+        assert model["name"] and model["size"] and model["best_for"]
+        assert model["fit"] in {"fits", "tight", "too-large", "unknown"}
+    assert {task["task"] for task in notes["tasks"]}
+    assert notes["future_tiers"] and notes["buying_note"]
 
 
 def test_api_llm_models_detailed(monkeypatch):

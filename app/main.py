@@ -3270,6 +3270,8 @@ def _settings_context(config, test_result=None, notify_test=None):
         severities=notify.SEVERITIES,
         task_classes=llm.TASK_CLASSES,
         task_labels=llm.TASK_LABELS,
+        model_notes=llm.LOCAL_MODEL_NOTES,
+        routed_models=set((config.get("routing") or {}).values()),
         test_result=test_result,
         notify_test=notify_test,
     )
